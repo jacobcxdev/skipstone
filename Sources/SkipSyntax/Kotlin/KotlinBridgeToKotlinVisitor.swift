@@ -1672,7 +1672,10 @@ final class KotlinBridgeToKotlinVisitor {
                 inputsHashBody.append("var hasher = Hasher()")
                 for paramName in allConstructorParamNames {
                     let access = classType == .value ? "peer_swift.value.\(paramName)" : "peer_swift.\(paramName)"
-                    inputsHashBody.append("if let h = \(access) as? AnyHashable { hasher.combine(h) } else { hasher.combine(ObjectIdentifier(\(access) as AnyObject)) }")
+                    // Only hash value-semantic types. Reference types (classes) are skipped because
+                    // their identity/hash is allocation-based and unstable across recompositions
+                    // (e.g. TCA Store scopes are recreated when sibling array elements change).
+                    inputsHashBody.append("if !(type(of: \(access)) is AnyClass), let h = \(access) as? AnyHashable { hasher.combine(h) }")
                 }
                 inputsHashBody.append("return Int64(hasher.finalize())")
                 cdeclFunctions.append(CDeclFunction(name: inputsHashCdecl.cdeclFunctionName, cdecl: inputsHashCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .int64, APIFlags(), nil), body: inputsHashBody))
@@ -1767,11 +1770,13 @@ final class KotlinBridgeToKotlinVisitor {
             var composeContentKotlin: [String] = []
             if canRememberPeer {
                 composeContentKotlin.append("val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
-                composeContentKotlin.append("if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+                composeContentKotlin.append("val swapped = peerHandle.peer != Swift_peer")
+                composeContentKotlin.append("if (swapped) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
             } else {
                 composeContentKotlin.append("val currentHash = Swift_inputsHash(Swift_peer)")
                 composeContentKotlin.append("val peerHandle = androidx.compose.runtime.remember(currentHash) { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
-                composeContentKotlin.append("if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+                composeContentKotlin.append("val swapped = peerHandle.peer != Swift_peer")
+                composeContentKotlin.append("if (swapped) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
             }
             // Replicate View.Evaluate's body evaluation path (observation tracking +
             // body.Evaluate + render). We can't call super._ComposeContent because that
