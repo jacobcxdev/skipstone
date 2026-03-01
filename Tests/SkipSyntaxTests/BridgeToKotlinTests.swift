@@ -9984,7 +9984,7 @@ final class BridgeToKotlinTests: XCTestCase {
         public func V_Swift_inputsHash(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> Int64 {
             let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
             var hasher = Hasher()
-            if let h = peer_swift.value.title as? AnyHashable { hasher.combine(h) } else { hasher.combine(ObjectIdentifier(peer_swift.value.title as AnyObject)) }
+            if !(type(of: peer_swift.value.title) is AnyClass), let h = peer_swift.value.title as? AnyHashable { hasher.combine(h) }
             return Int64(hasher.finalize())
         }
         @_cdecl("Java_V_Swift_1retain")
