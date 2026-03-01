@@ -2733,6 +2733,7 @@ final class KotlinVariableDeclaration: KotlinStatement, KotlinMemberDeclaration 
     }
     var declaredType: TypeSignature = .none
     var isLet = false
+    var isLetWithDefault = false
     var role: Role = .local
     var isOpen = false
     var annotations: [String] = []

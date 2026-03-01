@@ -9363,4 +9363,819 @@ final class BridgeToKotlinTests: XCTestCase {
         }
         """, transformers: transformers)
     }
+
+    // MARK: - Phase 1: Remember Swift_peer for let-with-default View properties
+
+    func testLetWithDefaultRememberPeer() async throws {
+        try await check(expectMessages: true, supportingSwift: """
+        public class Store {
+        }
+        """, swiftBridge: """
+        #if canImport(SkipFuseUI)
+        import SkipFuseUI
+        #endif
+        public struct V: View {
+            public let store = Store()
+            public var body: some View {
+                Text("hello")
+            }
+        }
+        """, kotlins: ["""
+        class V: skip.ui.View, skip.bridge.SwiftPeerBridged, skip.lib.SwiftProjecting {
+            var Swift_peer: skip.bridge.SwiftObjectPointer = skip.bridge.SwiftObjectNil
+
+            constructor(Swift_peer: skip.bridge.SwiftObjectPointer, marker: skip.bridge.SwiftPeerMarker?) {
+                this.Swift_peer = Swift_peer
+            }
+
+            fun finalize() {
+                Swift_release(Swift_peer)
+                Swift_peer = skip.bridge.SwiftObjectNil
+            }
+            private external fun Swift_release(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun Swift_peer(): skip.bridge.SwiftObjectPointer = Swift_peer
+
+            override fun equals(other: Any?): Boolean {
+                if (other !is skip.bridge.SwiftPeerBridged) return false
+                return Swift_peer == other.Swift_peer()
+            }
+
+            override fun hashCode(): Int = Swift_peer.hashCode()
+            private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }
+            private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun body(): skip.ui.View {
+                return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
+            }
+            private external fun Swift_composableBody(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.View?
+
+            @androidx.compose.runtime.Composable
+            override fun Evaluate(context: skip.ui.ComposeContext, options: Int): kotlin.collections.List<skip.ui.Renderable> = listOf(this.asRenderable())
+
+            @androidx.compose.runtime.Composable
+            override fun _ComposeContent(context: skip.ui.ComposeContext) {
+                val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }
+                if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }
+                skip.ui.ViewObservation.startRecording?.invoke()
+                skip.model.StateTracking.pushBody()
+                val renderables = body().Evaluate(context = context, options = 0)
+                skip.model.StateTracking.popBody()
+                skip.ui.ViewObservation.stopAndObserve?.invoke()
+                for (renderable in renderables) { renderable.Render(context = context) }
+            }
+
+            val store: Store
+                get() = Swift_store(Swift_peer)
+            private external fun Swift_store(Swift_peer: skip.bridge.SwiftObjectPointer): Store
+
+            override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
+            private external fun Swift_projectionImpl(options: Int): () -> Any
+
+            companion object {
+            }
+        }
+        """, """
+        open class Store: skip.lib.SwiftProjecting {
+
+            override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
+            private external fun Swift_projectionImpl(options: Int): () -> Any
+
+            companion object: CompanionClass() {
+            }
+            open class CompanionClass {
+            }
+        }
+        """], swiftBridgeSupports: ["""
+
+        import SkipFuseUI
+        extension V: BridgedToKotlin, SkipUIBridging, SkipUI.View {
+            nonisolated private static let Java_class = try! JClass(name: "V")
+            nonisolated public static func fromJavaObject(_ obj: JavaObjectPointer?, options: JConvertibleOptions) -> Self {
+                let ptr = SwiftObjectPointer.peer(of: obj!, options: options)
+                let box: SwiftValueTypeBox<Self> = ptr.pointee()!
+                return box.value
+            }
+            nonisolated public func toJavaObject(options: JConvertibleOptions) -> JavaObjectPointer? {
+                let box = SwiftValueTypeBox(self)
+                let Swift_peer = SwiftObjectPointer.pointer(to: box, retain: true)
+                return try! Self.Java_class.create(ctor: Self.Java_constructor_methodID, options: options, args: [Swift_peer.toJavaParameter(options: options), (nil as JavaObjectPointer?).toJavaParameter(options: options)])
+            }
+            nonisolated private static let Java_constructor_methodID = Java_class.getMethodID(name: "<init>", sig: "(JLskip/bridge/SwiftPeerMarker;)V")!
+            nonisolated public var Java_view: any SkipUI.View {
+                return self
+            }
+        }
+        @_cdecl("Java_V_Swift_1release")
+        public func V_Swift_release(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            Swift_peer.release(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1store")
+        public func V_Swift_store(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                return peer_swift.value.store.toJavaObject(options: [])!
+            }
+        }
+        @_cdecl("Java_V_Swift_1projectionImpl")
+        public func V_Swift_projectionImpl(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ options: Int32) -> JavaObjectPointer {
+            let projection = V.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
+            let factory: () -> Any = { projection }
+            return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        @_cdecl("Java_V_Swift_1retain")
+        public func V_Swift_retain(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            _ = Swift_peer.retained(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1composableBody")
+        public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                let body = peer_swift.value.body
+                return ((body as? SkipUIBridging)?.Java_view as? JConvertible)?.toJavaObject(options: [])
+            }
+        }
+        """, """
+
+        public class Store: BridgedFromKotlin {
+            nonisolated private static let Java_class = try! JClass(name: "Store")
+            nonisolated public let Java_peer: JObject
+            nonisolated public required init(Java_ptr: JavaObjectPointer) {
+                Java_peer = JObject(Java_ptr)
+            }
+            nonisolated public init(Java_peer: JObject) {
+                self.Java_peer = Java_peer
+            }
+            public init() {
+                Java_peer = jniContext {
+                    let ptr = try! Self.Java_class.create(ctor: Self.Java_constructor_methodID, options: [], args: [])
+                    return JObject(ptr)
+                }
+            }
+            nonisolated private static let Java_constructor_methodID = Java_class.getMethodID(name: "<init>", sig: "()V")!
+            nonisolated public static func fromJavaObject(_ obj: JavaObjectPointer?, options: JConvertibleOptions) -> Self {
+                return .init(Java_ptr: obj!)
+            }
+            nonisolated public func toJavaObject(options: JConvertibleOptions) -> JavaObjectPointer? {
+                return Java_peer.safePointer()
+            }
+        }
+        @_cdecl("Java_Store_Swift_1projectionImpl")
+        public func Store_Swift_projectionImpl(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ options: Int32) -> JavaObjectPointer {
+            let projection = Store.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
+            let factory: () -> Any = { projection }
+            return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        """], transformers: transformers)
+    }
+
+    func testLetWithDefaultPrivateRememberPeer() async throws {
+        try await check(swiftBridge: """
+        #if canImport(SkipFuseUI)
+        import SkipFuseUI
+        #endif
+        public struct V: View {
+            private let config = [1, 2, 3]
+            public var body: some View {
+                Text("hello")
+            }
+        }
+        """, kotlin: """
+        class V: skip.ui.View, skip.bridge.SwiftPeerBridged, skip.lib.SwiftProjecting {
+            var Swift_peer: skip.bridge.SwiftObjectPointer = skip.bridge.SwiftObjectNil
+
+            constructor(Swift_peer: skip.bridge.SwiftObjectPointer, marker: skip.bridge.SwiftPeerMarker?) {
+                this.Swift_peer = Swift_peer
+            }
+
+            fun finalize() {
+                Swift_release(Swift_peer)
+                Swift_peer = skip.bridge.SwiftObjectNil
+            }
+            private external fun Swift_release(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun Swift_peer(): skip.bridge.SwiftObjectPointer = Swift_peer
+
+            override fun equals(other: Any?): Boolean {
+                if (other !is skip.bridge.SwiftPeerBridged) return false
+                return Swift_peer == other.Swift_peer()
+            }
+
+            override fun hashCode(): Int = Swift_peer.hashCode()
+            private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }
+            private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun body(): skip.ui.View {
+                return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
+            }
+            private external fun Swift_composableBody(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.View?
+
+            @androidx.compose.runtime.Composable
+            override fun Evaluate(context: skip.ui.ComposeContext, options: Int): kotlin.collections.List<skip.ui.Renderable> = listOf(this.asRenderable())
+
+            @androidx.compose.runtime.Composable
+            override fun _ComposeContent(context: skip.ui.ComposeContext) {
+                val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }
+                if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }
+                skip.ui.ViewObservation.startRecording?.invoke()
+                skip.model.StateTracking.pushBody()
+                val renderables = body().Evaluate(context = context, options = 0)
+                skip.model.StateTracking.popBody()
+                skip.ui.ViewObservation.stopAndObserve?.invoke()
+                for (renderable in renderables) { renderable.Render(context = context) }
+            }
+
+            override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
+            private external fun Swift_projectionImpl(options: Int): () -> Any
+
+            companion object {
+            }
+        }
+        """, swiftBridgeSupport: """
+
+        import SkipFuseUI
+        extension V: BridgedToKotlin, SkipUIBridging, SkipUI.View {
+            nonisolated private static let Java_class = try! JClass(name: "V")
+            nonisolated public static func fromJavaObject(_ obj: JavaObjectPointer?, options: JConvertibleOptions) -> Self {
+                let ptr = SwiftObjectPointer.peer(of: obj!, options: options)
+                let box: SwiftValueTypeBox<Self> = ptr.pointee()!
+                return box.value
+            }
+            nonisolated public func toJavaObject(options: JConvertibleOptions) -> JavaObjectPointer? {
+                let box = SwiftValueTypeBox(self)
+                let Swift_peer = SwiftObjectPointer.pointer(to: box, retain: true)
+                return try! Self.Java_class.create(ctor: Self.Java_constructor_methodID, options: options, args: [Swift_peer.toJavaParameter(options: options), (nil as JavaObjectPointer?).toJavaParameter(options: options)])
+            }
+            nonisolated private static let Java_constructor_methodID = Java_class.getMethodID(name: "<init>", sig: "(JLskip/bridge/SwiftPeerMarker;)V")!
+            nonisolated public var Java_view: any SkipUI.View {
+                return self
+            }
+        }
+        @_cdecl("Java_V_Swift_1release")
+        public func V_Swift_release(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            Swift_peer.release(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1projectionImpl")
+        public func V_Swift_projectionImpl(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ options: Int32) -> JavaObjectPointer {
+            let projection = V.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
+            let factory: () -> Any = { projection }
+            return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        @_cdecl("Java_V_Swift_1retain")
+        public func V_Swift_retain(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            _ = Swift_peer.retained(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1composableBody")
+        public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                let body = peer_swift.value.body
+                return ((body as? SkipUIBridging)?.Java_view as? JConvertible)?.toJavaObject(options: [])
+            }
+        }
+        """, transformers: transformers)
+    }
+
+    func testLetWithoutDefaultNoRememberPeer() async throws {
+        try await check(swiftBridge: """
+        #if canImport(SkipFuseUI)
+        import SkipFuseUI
+        #endif
+        public struct V: View {
+            public let title: String
+            public var body: some View {
+                Text(title)
+            }
+        }
+        """, kotlin: """
+        class V: skip.ui.View, skip.bridge.SwiftPeerBridged, skip.lib.SwiftProjecting {
+            var Swift_peer: skip.bridge.SwiftObjectPointer = skip.bridge.SwiftObjectNil
+
+            constructor(Swift_peer: skip.bridge.SwiftObjectPointer, marker: skip.bridge.SwiftPeerMarker?) {
+                this.Swift_peer = Swift_peer
+            }
+
+            fun finalize() {
+                Swift_release(Swift_peer)
+                Swift_peer = skip.bridge.SwiftObjectNil
+            }
+            private external fun Swift_release(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun Swift_peer(): skip.bridge.SwiftObjectPointer = Swift_peer
+
+            override fun equals(other: Any?): Boolean {
+                if (other !is skip.bridge.SwiftPeerBridged) return false
+                return Swift_peer == other.Swift_peer()
+            }
+
+            override fun hashCode(): Int = Swift_peer.hashCode()
+
+            override fun body(): skip.ui.View {
+                return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
+            }
+            private external fun Swift_composableBody(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.View?
+
+            val title: String
+                get() = Swift_title(Swift_peer)
+            private external fun Swift_title(Swift_peer: skip.bridge.SwiftObjectPointer): String
+            constructor(title: String) {
+                Swift_peer = Swift_constructor_0(title)
+            }
+            private external fun Swift_constructor_0(title: String): skip.bridge.SwiftObjectPointer
+
+            override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
+            private external fun Swift_projectionImpl(options: Int): () -> Any
+
+            companion object {
+            }
+        }
+        """, swiftBridgeSupport: """
+
+        import SkipFuseUI
+        extension V: BridgedToKotlin, SkipUIBridging, SkipUI.View {
+            nonisolated private static let Java_class = try! JClass(name: "V")
+            nonisolated public static func fromJavaObject(_ obj: JavaObjectPointer?, options: JConvertibleOptions) -> Self {
+                let ptr = SwiftObjectPointer.peer(of: obj!, options: options)
+                let box: SwiftValueTypeBox<Self> = ptr.pointee()!
+                return box.value
+            }
+            nonisolated public func toJavaObject(options: JConvertibleOptions) -> JavaObjectPointer? {
+                let box = SwiftValueTypeBox(self)
+                let Swift_peer = SwiftObjectPointer.pointer(to: box, retain: true)
+                return try! Self.Java_class.create(ctor: Self.Java_constructor_methodID, options: options, args: [Swift_peer.toJavaParameter(options: options), (nil as JavaObjectPointer?).toJavaParameter(options: options)])
+            }
+            nonisolated private static let Java_constructor_methodID = Java_class.getMethodID(name: "<init>", sig: "(JLskip/bridge/SwiftPeerMarker;)V")!
+            nonisolated public var Java_view: any SkipUI.View {
+                return self
+            }
+        }
+        @_cdecl("Java_V_Swift_1release")
+        public func V_Swift_release(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            Swift_peer.release(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1title")
+        public func V_Swift_title(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaString {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                return peer_swift.value.title.toJavaObject(options: [])!
+            }
+        }
+        @_cdecl("Java_V_Swift_1constructor_10")
+        public func V_Swift_constructor_0(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ p_0: JavaString) -> SwiftObjectPointer {
+            let p_0_sendable = UncheckedSendableBox(p_0)
+            return SkipBridge.assumeMainActorUnchecked {
+                let p_0 = p_0_sendable.wrappedValue
+                let p_0_swift = String.fromJavaObject(p_0, options: [])
+                let f_return_swift = SwiftValueTypeBox(V(title: p_0_swift))
+                return SwiftObjectPointer.pointer(to: f_return_swift, retain: true)
+            }
+        }
+        @_cdecl("Java_V_Swift_1projectionImpl")
+        public func V_Swift_projectionImpl(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ options: Int32) -> JavaObjectPointer {
+            let projection = V.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
+            let factory: () -> Any = { projection }
+            return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        @_cdecl("Java_V_Swift_1composableBody")
+        public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                let body = peer_swift.value.body
+                return ((body as? SkipUIBridging)?.Java_view as? JConvertible)?.toJavaObject(options: [])
+            }
+        }
+        """, transformers: transformers)
+    }
+
+    func testLetLiteralConstantNoRememberPeer() async throws {
+        try await check(swiftBridge: """
+        #if canImport(SkipFuseUI)
+        import SkipFuseUI
+        #endif
+        public struct V: View {
+            public let count = 42
+            public var body: some View {
+                Text("hello")
+            }
+        }
+        """, kotlin: """
+        class V: skip.ui.View, skip.bridge.SwiftPeerBridged, skip.lib.SwiftProjecting {
+            var Swift_peer: skip.bridge.SwiftObjectPointer = skip.bridge.SwiftObjectNil
+
+            constructor(Swift_peer: skip.bridge.SwiftObjectPointer, marker: skip.bridge.SwiftPeerMarker?) {
+                this.Swift_peer = Swift_peer
+            }
+
+            fun finalize() {
+                Swift_release(Swift_peer)
+                Swift_peer = skip.bridge.SwiftObjectNil
+            }
+            private external fun Swift_release(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun Swift_peer(): skip.bridge.SwiftObjectPointer = Swift_peer
+
+            override fun equals(other: Any?): Boolean {
+                if (other !is skip.bridge.SwiftPeerBridged) return false
+                return Swift_peer == other.Swift_peer()
+            }
+
+            override fun hashCode(): Int = Swift_peer.hashCode()
+
+            override fun body(): skip.ui.View {
+                return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
+            }
+            private external fun Swift_composableBody(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.View?
+
+            val count = 42
+
+            override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
+            private external fun Swift_projectionImpl(options: Int): () -> Any
+
+            companion object {
+            }
+        }
+        """, swiftBridgeSupport: """
+
+        import SkipFuseUI
+        extension V: BridgedToKotlin, SkipUIBridging, SkipUI.View {
+            nonisolated private static let Java_class = try! JClass(name: "V")
+            nonisolated public static func fromJavaObject(_ obj: JavaObjectPointer?, options: JConvertibleOptions) -> Self {
+                let ptr = SwiftObjectPointer.peer(of: obj!, options: options)
+                let box: SwiftValueTypeBox<Self> = ptr.pointee()!
+                return box.value
+            }
+            nonisolated public func toJavaObject(options: JConvertibleOptions) -> JavaObjectPointer? {
+                let box = SwiftValueTypeBox(self)
+                let Swift_peer = SwiftObjectPointer.pointer(to: box, retain: true)
+                return try! Self.Java_class.create(ctor: Self.Java_constructor_methodID, options: options, args: [Swift_peer.toJavaParameter(options: options), (nil as JavaObjectPointer?).toJavaParameter(options: options)])
+            }
+            nonisolated private static let Java_constructor_methodID = Java_class.getMethodID(name: "<init>", sig: "(JLskip/bridge/SwiftPeerMarker;)V")!
+            nonisolated public var Java_view: any SkipUI.View {
+                return self
+            }
+        }
+        @_cdecl("Java_V_Swift_1release")
+        public func V_Swift_release(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            Swift_peer.release(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1projectionImpl")
+        public func V_Swift_projectionImpl(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ options: Int32) -> JavaObjectPointer {
+            let projection = V.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
+            let factory: () -> Any = { projection }
+            return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        @_cdecl("Java_V_Swift_1composableBody")
+        public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                let body = peer_swift.value.body
+                return ((body as? SkipUIBridging)?.Java_view as? JConvertible)?.toJavaObject(options: [])
+            }
+        }
+        """, transformers: transformers)
+    }
+
+    // Phase 2: mixed view with constructor param + let-with-default gets input-change detection
+    func testLetWithDefaultAndConstructorParamsRememberWithInputCheck() async throws {
+        try await check(expectMessages: true, supportingSwift: """
+        public class Store {
+        }
+        """, swiftBridge: """
+        #if canImport(SkipFuseUI)
+        import SkipFuseUI
+        #endif
+        public struct V: View {
+            public let title: String
+            public let store = Store()
+            public var body: some View {
+                Text(title)
+            }
+        }
+        """, kotlins: ["""
+        class V: skip.ui.View, skip.bridge.SwiftPeerBridged, skip.lib.SwiftProjecting {
+            var Swift_peer: skip.bridge.SwiftObjectPointer = skip.bridge.SwiftObjectNil
+
+            constructor(Swift_peer: skip.bridge.SwiftObjectPointer, marker: skip.bridge.SwiftPeerMarker?) {
+                this.Swift_peer = Swift_peer
+            }
+
+            fun finalize() {
+                Swift_release(Swift_peer)
+                Swift_peer = skip.bridge.SwiftObjectNil
+            }
+            private external fun Swift_release(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun Swift_peer(): skip.bridge.SwiftObjectPointer = Swift_peer
+
+            override fun equals(other: Any?): Boolean {
+                if (other !is skip.bridge.SwiftPeerBridged) return false
+                return Swift_peer == other.Swift_peer()
+            }
+
+            override fun hashCode(): Int = Swift_peer.hashCode()
+            private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }
+            private external fun Swift_inputsHash(Swift_peer: skip.bridge.SwiftObjectPointer): Long
+            private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun body(): skip.ui.View {
+                return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
+            }
+            private external fun Swift_composableBody(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.View?
+
+            @androidx.compose.runtime.Composable
+            override fun Evaluate(context: skip.ui.ComposeContext, options: Int): kotlin.collections.List<skip.ui.Renderable> = listOf(this.asRenderable())
+
+            @androidx.compose.runtime.Composable
+            override fun _ComposeContent(context: skip.ui.ComposeContext) {
+                val currentHash = Swift_inputsHash(Swift_peer)
+                val peerHandle = androidx.compose.runtime.remember(currentHash) { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }
+                if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }
+                skip.ui.ViewObservation.startRecording?.invoke()
+                skip.model.StateTracking.pushBody()
+                val renderables = body().Evaluate(context = context, options = 0)
+                skip.model.StateTracking.popBody()
+                skip.ui.ViewObservation.stopAndObserve?.invoke()
+                for (renderable in renderables) { renderable.Render(context = context) }
+            }
+
+            val title: String
+                get() = Swift_title(Swift_peer)
+            private external fun Swift_title(Swift_peer: skip.bridge.SwiftObjectPointer): String
+            val store: Store
+                get() = Swift_store(Swift_peer)
+            private external fun Swift_store(Swift_peer: skip.bridge.SwiftObjectPointer): Store
+            constructor(title: String) {
+                Swift_peer = Swift_constructor_0(title)
+            }
+            private external fun Swift_constructor_0(title: String): skip.bridge.SwiftObjectPointer
+
+            override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
+            private external fun Swift_projectionImpl(options: Int): () -> Any
+
+            companion object {
+            }
+        }
+        """, """
+        open class Store: skip.lib.SwiftProjecting {
+
+            override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
+            private external fun Swift_projectionImpl(options: Int): () -> Any
+
+            companion object: CompanionClass() {
+            }
+            open class CompanionClass {
+            }
+        }
+        """], swiftBridgeSupports: ["""
+
+        import SkipFuseUI
+        extension V: BridgedToKotlin, SkipUIBridging, SkipUI.View {
+            nonisolated private static let Java_class = try! JClass(name: "V")
+            nonisolated public static func fromJavaObject(_ obj: JavaObjectPointer?, options: JConvertibleOptions) -> Self {
+                let ptr = SwiftObjectPointer.peer(of: obj!, options: options)
+                let box: SwiftValueTypeBox<Self> = ptr.pointee()!
+                return box.value
+            }
+            nonisolated public func toJavaObject(options: JConvertibleOptions) -> JavaObjectPointer? {
+                let box = SwiftValueTypeBox(self)
+                let Swift_peer = SwiftObjectPointer.pointer(to: box, retain: true)
+                return try! Self.Java_class.create(ctor: Self.Java_constructor_methodID, options: options, args: [Swift_peer.toJavaParameter(options: options), (nil as JavaObjectPointer?).toJavaParameter(options: options)])
+            }
+            nonisolated private static let Java_constructor_methodID = Java_class.getMethodID(name: "<init>", sig: "(JLskip/bridge/SwiftPeerMarker;)V")!
+            nonisolated public var Java_view: any SkipUI.View {
+                return self
+            }
+        }
+        @_cdecl("Java_V_Swift_1release")
+        public func V_Swift_release(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            Swift_peer.release(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1title")
+        public func V_Swift_title(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaString {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                return peer_swift.value.title.toJavaObject(options: [])!
+            }
+        }
+        @_cdecl("Java_V_Swift_1store")
+        public func V_Swift_store(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                return peer_swift.value.store.toJavaObject(options: [])!
+            }
+        }
+        @_cdecl("Java_V_Swift_1constructor_10")
+        public func V_Swift_constructor_0(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ p_0: JavaString) -> SwiftObjectPointer {
+            let p_0_sendable = UncheckedSendableBox(p_0)
+            return SkipBridge.assumeMainActorUnchecked {
+                let p_0 = p_0_sendable.wrappedValue
+                let p_0_swift = String.fromJavaObject(p_0, options: [])
+                let f_return_swift = SwiftValueTypeBox(V(title: p_0_swift))
+                return SwiftObjectPointer.pointer(to: f_return_swift, retain: true)
+            }
+        }
+        @_cdecl("Java_V_Swift_1projectionImpl")
+        public func V_Swift_projectionImpl(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ options: Int32) -> JavaObjectPointer {
+            let projection = V.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
+            let factory: () -> Any = { projection }
+            return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        @_cdecl("Java_V_Swift_1inputsHash")
+        public func V_Swift_inputsHash(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> Int64 {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            var hasher = Hasher()
+            if let h = peer_swift.value.title as? AnyHashable { hasher.combine(h) } else { hasher.combine(ObjectIdentifier(peer_swift.value.title as AnyObject)) }
+            return Int64(hasher.finalize())
+        }
+        @_cdecl("Java_V_Swift_1retain")
+        public func V_Swift_retain(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            _ = Swift_peer.retained(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1composableBody")
+        public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                let body = peer_swift.value.body
+                return ((body as? SkipUIBridging)?.Java_view as? JConvertible)?.toJavaObject(options: [])
+            }
+        }
+        """, """
+
+        public class Store: BridgedFromKotlin {
+            nonisolated private static let Java_class = try! JClass(name: "Store")
+            nonisolated public let Java_peer: JObject
+            nonisolated public required init(Java_ptr: JavaObjectPointer) {
+                Java_peer = JObject(Java_ptr)
+            }
+            nonisolated public init(Java_peer: JObject) {
+                self.Java_peer = Java_peer
+            }
+            public init() {
+                Java_peer = jniContext {
+                    let ptr = try! Self.Java_class.create(ctor: Self.Java_constructor_methodID, options: [], args: [])
+                    return JObject(ptr)
+                }
+            }
+            nonisolated private static let Java_constructor_methodID = Java_class.getMethodID(name: "<init>", sig: "()V")!
+            nonisolated public static func fromJavaObject(_ obj: JavaObjectPointer?, options: JConvertibleOptions) -> Self {
+                return .init(Java_ptr: obj!)
+            }
+            nonisolated public func toJavaObject(options: JConvertibleOptions) -> JavaObjectPointer? {
+                return Java_peer.safePointer()
+            }
+        }
+        @_cdecl("Java_Store_Swift_1projectionImpl")
+        public func Store_Swift_projectionImpl(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ options: Int32) -> JavaObjectPointer {
+            let projection = Store.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
+            let factory: () -> Any = { projection }
+            return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        """], transformers: transformers)
+    }
+
+    // View with only constructor params (no let-with-default) → NO peer remembering
+    func testConstructorParamsOnlyNoRemember() async throws {
+        try await check(swiftBridge: """
+        #if canImport(SkipFuseUI)
+        import SkipFuseUI
+        #endif
+        public struct V: View {
+            public let title: String
+            public var body: some View {
+                Text(title)
+            }
+        }
+        """, kotlins: ["""
+        class V: skip.ui.View, skip.bridge.SwiftPeerBridged, skip.lib.SwiftProjecting {
+            var Swift_peer: skip.bridge.SwiftObjectPointer = skip.bridge.SwiftObjectNil
+
+            constructor(Swift_peer: skip.bridge.SwiftObjectPointer, marker: skip.bridge.SwiftPeerMarker?) {
+                this.Swift_peer = Swift_peer
+            }
+
+            fun finalize() {
+                Swift_release(Swift_peer)
+                Swift_peer = skip.bridge.SwiftObjectNil
+            }
+            private external fun Swift_release(Swift_peer: skip.bridge.SwiftObjectPointer)
+
+            override fun Swift_peer(): skip.bridge.SwiftObjectPointer = Swift_peer
+
+            override fun equals(other: Any?): Boolean {
+                if (other !is skip.bridge.SwiftPeerBridged) return false
+                return Swift_peer == other.Swift_peer()
+            }
+
+            override fun hashCode(): Int = Swift_peer.hashCode()
+
+            override fun body(): skip.ui.View {
+                return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
+            }
+            private external fun Swift_composableBody(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.View?
+
+            val title: String
+                get() = Swift_title(Swift_peer)
+            private external fun Swift_title(Swift_peer: skip.bridge.SwiftObjectPointer): String
+            constructor(title: String) {
+                Swift_peer = Swift_constructor_0(title)
+            }
+            private external fun Swift_constructor_0(title: String): skip.bridge.SwiftObjectPointer
+
+            override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
+            private external fun Swift_projectionImpl(options: Int): () -> Any
+
+            companion object {
+            }
+        }
+        """], swiftBridgeSupports: ["""
+
+        import SkipFuseUI
+        extension V: BridgedToKotlin, SkipUIBridging, SkipUI.View {
+            nonisolated private static let Java_class = try! JClass(name: "V")
+            nonisolated public static func fromJavaObject(_ obj: JavaObjectPointer?, options: JConvertibleOptions) -> Self {
+                let ptr = SwiftObjectPointer.peer(of: obj!, options: options)
+                let box: SwiftValueTypeBox<Self> = ptr.pointee()!
+                return box.value
+            }
+            nonisolated public func toJavaObject(options: JConvertibleOptions) -> JavaObjectPointer? {
+                let box = SwiftValueTypeBox(self)
+                let Swift_peer = SwiftObjectPointer.pointer(to: box, retain: true)
+                return try! Self.Java_class.create(ctor: Self.Java_constructor_methodID, options: options, args: [Swift_peer.toJavaParameter(options: options), (nil as JavaObjectPointer?).toJavaParameter(options: options)])
+            }
+            nonisolated private static let Java_constructor_methodID = Java_class.getMethodID(name: "<init>", sig: "(JLskip/bridge/SwiftPeerMarker;)V")!
+            nonisolated public var Java_view: any SkipUI.View {
+                return self
+            }
+        }
+        @_cdecl("Java_V_Swift_1release")
+        public func V_Swift_release(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            Swift_peer.release(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1title")
+        public func V_Swift_title(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaString {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                return peer_swift.value.title.toJavaObject(options: [])!
+            }
+        }
+        @_cdecl("Java_V_Swift_1constructor_10")
+        public func V_Swift_constructor_0(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ p_0: JavaString) -> SwiftObjectPointer {
+            let p_0_sendable = UncheckedSendableBox(p_0)
+            return SkipBridge.assumeMainActorUnchecked {
+                let p_0 = p_0_sendable.wrappedValue
+                let p_0_swift = String.fromJavaObject(p_0, options: [])
+                let f_return_swift = SwiftValueTypeBox(V(title: p_0_swift))
+                return SwiftObjectPointer.pointer(to: f_return_swift, retain: true)
+            }
+        }
+        @_cdecl("Java_V_Swift_1projectionImpl")
+        public func V_Swift_projectionImpl(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ options: Int32) -> JavaObjectPointer {
+            let projection = V.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
+            let factory: () -> Any = { projection }
+            return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        @_cdecl("Java_V_Swift_1composableBody")
+        public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            return SkipBridge.assumeMainActorUnchecked {
+                let body = peer_swift.value.body
+                return ((body as? SkipUIBridging)?.Java_view as? JConvertible)?.toJavaObject(options: [])
+            }
+        }
+        """], transformers: transformers)
+    }
+
+    // Phase 2: internal struct (auto-bridged SwiftUI view) with internal let-with-default + constructor param
+    // Mirrors CounterCard in fuse-app: internal access throughout
+    // Verifies that peer remembering works regardless of access level
+    func testLetWithDefaultInternalAccessRememberWithInputCheck() async throws {
+        let swiftBridgeString = """
+        import SkipFuseUI
+        struct V: View {
+            let title: String
+            let instanceID = UUID()
+            var body: some View {
+                Text(title)
+            }
+        }
+        """
+        let bridgeFile = try tmpFile(named: "Bridge.swift", contents: swiftBridgeString)
+        let codebaseInfo = CodebaseInfo()
+        let tp = Transpiler(transpileFiles: [], bridgeFiles: [Source.FilePath(path: bridgeFile.path)], autoBridge: .public, codebaseInfo: codebaseInfo, transformers: transformers)
+        var transpilations: [Transpilation] = []
+        try await tp.transpile { transpilations.append($0) }
+        let kotlin = transpilations.first(where: { $0.output.file.name.hasSuffix(".kt") })?.output.content ?? ""
+        // Verify Phase 2 peer remembering: Evaluate returns asRenderable(), _ComposeContent has remember
+        XCTAssertTrue(kotlin.contains("SwiftPeerHandle"), "Internal view should generate SwiftPeerHandle class")
+        XCTAssertTrue(kotlin.contains("Swift_inputsHash"), "Internal view should generate Swift_inputsHash for input-change detection")
+        XCTAssertTrue(kotlin.contains("Swift_retain"), "Internal view should generate Swift_retain for peer lifecycle")
+        // Evaluate override returns self as Renderable (no body evaluation during Evaluate)
+        XCTAssertTrue(kotlin.contains("override fun Evaluate("), "Should generate Evaluate override returning asRenderable()")
+        XCTAssertTrue(kotlin.contains("listOf(this.asRenderable())"), "Evaluate should return self as Renderable")
+        // _ComposeContent has peer remembering with input hash
+        XCTAssertTrue(kotlin.contains("override fun _ComposeContent("), "Should generate _ComposeContent override with peer remembering")
+        XCTAssertTrue(kotlin.contains("remember(currentHash)"), "Internal view should use keyed remember with input hash")
+        // body() should be clean (no peer remembering prefix)
+        XCTAssertTrue(kotlin.contains("ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)"), "body() should be clean without peer remembering prefix")
+    }
 }

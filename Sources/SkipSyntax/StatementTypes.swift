@@ -1734,9 +1734,10 @@ class TypeDeclaration: Statement {
 /// Tracked unbridged members that can affect code transpilation and bridging.
 enum UnbridgedMember: Hashable {
     case constructor
-    case uninitializedStructProperty
+    case uninitializedStructProperty(String)
     case swiftUIStateProperty(String, Attributes, Modifiers) // Name, attributes, modifiers
     case observableType(String)
+    case letWithDefault(String)
 
     var isSwiftUIStateProperty: Bool {
         if case .swiftUIStateProperty = self {
@@ -1762,7 +1763,7 @@ extension Array where Element == UnbridgedMember {
             switch member {
             case .constructor:
                 return true
-            case .uninitializedStructProperty:
+            case .uninitializedStructProperty(_):
                 return true
             default:
                 break
@@ -1862,10 +1863,26 @@ final class VariableDeclaration: Statement {
                     throw Message.unsupportedSyntax(syntax.pattern, source: syntaxTree.source)
                 }
                 return [UnbridgedMemberDeclaration(member: .swiftUIStateProperty(name, attributes, modifiers), syntax: syntax, extras: extras, in: syntaxTree)]
-            } else if syntaxTree.isBridgeFile, context.memberOf?.type == .structDeclaration, !modifiers.isStatic, variableDecl.bindings.first?.initializer?.value == nil {
+            } else if syntaxTree.isBridgeFile, context.memberOf?.type == .structDeclaration, !modifiers.isStatic, variableDecl.bindings.first?.initializer?.value == nil, variableDecl.bindings.first?.accessorBlock == nil {
                 // We must note unbridged, unintialized struct properties because they affect default constructor
-                // generation and bridging
-                return [UnbridgedMemberDeclaration(member: .uninitializedStructProperty, syntax: syntax, extras: extras, in: syntaxTree)]
+                // generation and bridging (exclude computed properties which have accessor blocks)
+                let propName = variableDecl.bindings.first?.pattern.identifierPatterns(in: syntaxTree)?.compactMap(\.name?.removingBacktickEscaping).first ?? ""
+                return [UnbridgedMemberDeclaration(member: .uninitializedStructProperty(propName), syntax: syntax, extras: extras, in: syntaxTree)]
+            } else if syntaxTree.isBridgeFile,
+                      context.memberOf?.type == .structDeclaration,
+                      !modifiers.isStatic,
+                      variableDecl.bindingSpecifier.text == "let",
+                      variableDecl.bindings.first?.initializer?.value != nil,
+                      attributes.stateAttribute == nil,
+                      attributes.environmentAttribute == nil,
+                      !attributes.contains(.focusState),
+                      !attributes.contains(.gestureState),
+                      !attributes.contains(.appStorage) {
+                // Non-bridgable let-with-default: track for peer remembering
+                guard let optionalName = variableDecl.bindings.first?.pattern.identifierPatterns(in: syntaxTree)?.map(\.name?.removingBacktickEscaping).first, let name = optionalName else {
+                    return []
+                }
+                return [UnbridgedMemberDeclaration(member: .letWithDefault(name), syntax: syntax, extras: extras, in: syntaxTree)]
             } else {
                 return []
             }

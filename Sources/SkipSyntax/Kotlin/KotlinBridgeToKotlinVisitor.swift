@@ -162,6 +162,16 @@ final class KotlinBridgeToKotlinVisitor {
             return false
         }
 
+        // Flag let-with-default for peer remembering (Phase 1 of identity gap fix).
+        // Must happen before updateDeclaration() strips variableDeclaration.value.
+        if variableDeclaration.isLet,
+           variableDeclaration.value != nil,
+           !variableDeclaration.modifiers.isStatic,
+           let cd = classDeclaration,
+           cd.swiftUIType != .none {
+            variableDeclaration.isLetWithDefault = true
+        }
+
         let propertyName = variableDeclaration.preEscapedPropertyName ?? variableDeclaration.propertyName
         guard !variableDeclaration.isAppendAsFunction else {
             let functionDeclaration = KotlinFunctionDeclaration(name: propertyName, sourceFile: variableDeclaration.sourceFile, sourceRange: variableDeclaration.sourceRange)
@@ -1577,35 +1587,136 @@ final class KotlinBridgeToKotlinVisitor {
             }
             return (name, attributes, modifiers)
         }
+
+        let hasLetWithDefault = classDeclaration.unbridgedMembers.contains {
+            if case .letWithDefault = $0 { return true } else { return false }
+        } || classDeclaration.members.contains(where: {
+            ($0 as? KotlinVariableDeclaration)?.isLetWithDefault == true
+        })
+        // Peer remembering: collect constructor param info to determine strategy.
+        // A constructor param is a stored property without a default value:
+        // - Bridgable: KotlinVariableDeclaration with value==nil and !isLetWithDefault
+        //   (isLetWithDefault properties had their value stripped by updateDeclaration)
+        // - Non-bridgable: UnbridgedMember.uninitializedStructProperty
+        let bridgableConstructorParamNames: [String] = classDeclaration.members.compactMap { member in
+            guard let varDecl = member as? KotlinVariableDeclaration,
+                  !varDecl.modifiers.isStatic,
+                  varDecl.value == nil,
+                  !varDecl.isLetWithDefault,
+                  !varDecl.isGenerated,
+                  varDecl.role == .property else { return nil }
+            return varDecl.preEscapedPropertyName ?? varDecl.propertyName
+        }
+        let unbridgedConstructorParamNames: [String] = classDeclaration.unbridgedMembers.compactMap {
+            if case .uninitializedStructProperty(let name) = $0, !name.isEmpty { return name } else { return nil }
+        }
+        let hasNonBridgableConstructorParams = classDeclaration.unbridgedMembers.contains {
+            if case .uninitializedStructProperty(let name) = $0 { return name.isEmpty } else { return false }
+        }
+        // All constructor param names available for Swift-side hashing (bridgable Kotlin members + unbridged Swift-only)
+        let allConstructorParamNames = bridgableConstructorParamNames + unbridgedConstructorParamNames
+        let hasConstructorParams = !allConstructorParamNames.isEmpty || hasNonBridgableConstructorParams
+        // Phase 1: remember peer for views with ONLY let-with-default properties (no constructor params)
+        let canRememberPeer = hasLetWithDefault && !hasConstructorParams
+        // Phase 2: remember peer with input-change detection for mixed views
+        // Works for both bridged views (unbridged params accessed via Swift_inputsHash on Swift side)
+        // and transpiled views (bridgable params as Kotlin members)
+        let canRememberPeerWithInputCheck = hasLetWithDefault && !allConstructorParamNames.isEmpty && !hasNonBridgableConstructorParams
+
         if !stateVariables.isEmpty {
             statements += swiftUIEvaluate(swiftUIType, for: classDeclaration, stateVariables: stateVariables)
-            for (name, attributes, modifiers) in stateVariables {
-                var initStatements: [KotlinStatement] = []
-                var syncStatements: [KotlinStatement] = []
-                var initSwift: [String] = []
-                var syncSwift: [String] = []
-                var initCdeclFunctions: [CDeclFunction] = []
-                var syncCdeclFunctions: [CDeclFunction] = []
-                if attributes.stateAttribute != nil || attributes.contains(.focusState) || attributes.contains(.gestureState) || attributes.contains(.appStorage) {
-                    let supportTypeName: String
-                    let boxName: String
-                    if attributes.contains(.appStorage) {
-                        supportTypeName = "AppStorageSupport"
-                        boxName = "appStorageBox"
-                    } else {
-                        supportTypeName = "StateSupport"
-                        boxName = "valueBox"
-                    }
-                    (initStatements, initSwift, initCdeclFunctions) = swiftUIInitState(swiftUIType, for: name, in: classDeclaration, supportTypeName: supportTypeName, boxName: boxName, attributes: attributes, modifiers: modifiers)
-                    (syncStatements, syncSwift, syncCdeclFunctions) = swiftUISyncState(swiftUIType, for: name, in: classDeclaration, supportTypeName: supportTypeName, boxName: boxName, attributes: attributes, modifiers: modifiers)
-                } else if attributes.environmentAttribute != nil {
-                    (initStatements, initSwift, initCdeclFunctions) = swiftUIInitEnvironment(swiftUIType, for: name, in: classDeclaration, attributes: attributes, modifiers: modifiers)
-                    (syncStatements, syncSwift, syncCdeclFunctions) = swiftUISyncEnvironment(swiftUIType, for: name, in: classDeclaration, attributes: attributes, modifiers: modifiers)
+        }
+        if canRememberPeer || canRememberPeerWithInputCheck {
+            if canRememberPeer {
+                // Generate SwiftPeerHandle helper class and Swift_retain external function for peer remembering
+                let peerHandleClass = KotlinRawStatement(sourceCode: "private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }")
+                statements.append(peerHandleClass)
+                let retainExternal = KotlinRawStatement(sourceCode: "private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)")
+                statements.append(retainExternal)
+
+                let classType = ClassType(classDeclaration)
+                let retainCdecl = CDeclFunction.declaration(for: classDeclaration, isCompanion: false, name: "Swift_retain", translator: translator)
+                var retainBody: [String] = []
+                switch classType {
+                case .generic:
+                    retainBody.append("_ = Swift_peer.retained(as: \(classDeclaration.signature.typeErasedClass).self)")
+                case .reference:
+                    retainBody.append("_ = Swift_peer.retained(as: \(classDeclaration.signature).self)")
+                default:
+                    retainBody.append("_ = Swift_peer.retained(as: SwiftValueTypeBox<\(classDeclaration.signature)>.self)")
                 }
-                statements += initStatements + syncStatements
-                swift += initSwift + syncSwift
-                cdeclFunctions += initCdeclFunctions + syncCdeclFunctions
+                cdeclFunctions.append(CDeclFunction(name: retainCdecl.cdeclFunctionName, cdecl: retainCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .void, APIFlags(), nil), body: retainBody))
+            } else if canRememberPeerWithInputCheck {
+                // Phase 2: Generate SwiftPeerHandle (same shape as Phase 1), Swift_inputsHash, and Swift_retain
+                // Uses remember(key) with inputsHash as key — Compose handles invalidation automatically
+                let peerHandleClass = KotlinRawStatement(sourceCode: "private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }")
+                statements.append(peerHandleClass)
+                let inputsHashExternal = KotlinRawStatement(sourceCode: "private external fun Swift_inputsHash(Swift_peer: skip.bridge.SwiftObjectPointer): Long")
+                statements.append(inputsHashExternal)
+                let retainExternal = KotlinRawStatement(sourceCode: "private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)")
+                statements.append(retainExternal)
+
+                let classType = ClassType(classDeclaration)
+
+                // Generate Swift_inputsHash cdecl
+                let inputsHashCdecl = CDeclFunction.declaration(for: classDeclaration, isCompanion: false, name: "Swift_inputsHash", translator: translator)
+                var inputsHashBody: [String] = []
+                switch classType {
+                case .generic:
+                    inputsHashBody.append("let peer_swift: \(classDeclaration.signature.typeErasedClass) = Swift_peer.pointee()!")
+                case .reference:
+                    inputsHashBody.append("let peer_swift: \(classDeclaration.signature) = Swift_peer.pointee()!")
+                default:
+                    inputsHashBody.append("let peer_swift: SwiftValueTypeBox<\(classDeclaration.signature)> = Swift_peer.pointee()!")
+                }
+                inputsHashBody.append("var hasher = Hasher()")
+                for paramName in allConstructorParamNames {
+                    let access = classType == .value ? "peer_swift.value.\(paramName)" : "peer_swift.\(paramName)"
+                    inputsHashBody.append("if let h = \(access) as? AnyHashable { hasher.combine(h) } else { hasher.combine(ObjectIdentifier(\(access) as AnyObject)) }")
+                }
+                inputsHashBody.append("return Int64(hasher.finalize())")
+                cdeclFunctions.append(CDeclFunction(name: inputsHashCdecl.cdeclFunctionName, cdecl: inputsHashCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .int64, APIFlags(), nil), body: inputsHashBody))
+
+                // Generate Swift_retain cdecl (same as Phase 1)
+                let retainCdecl = CDeclFunction.declaration(for: classDeclaration, isCompanion: false, name: "Swift_retain", translator: translator)
+                var retainBody: [String] = []
+                switch classType {
+                case .generic:
+                    retainBody.append("_ = Swift_peer.retained(as: \(classDeclaration.signature.typeErasedClass).self)")
+                case .reference:
+                    retainBody.append("_ = Swift_peer.retained(as: \(classDeclaration.signature).self)")
+                default:
+                    retainBody.append("_ = Swift_peer.retained(as: SwiftValueTypeBox<\(classDeclaration.signature)>.self)")
+                }
+                cdeclFunctions.append(CDeclFunction(name: retainCdecl.cdeclFunctionName, cdecl: retainCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .void, APIFlags(), nil), body: retainBody))
             }
+        }
+        for (name, attributes, modifiers) in stateVariables {
+            var initStatements: [KotlinStatement] = []
+            var syncStatements: [KotlinStatement] = []
+            var initSwift: [String] = []
+            var syncSwift: [String] = []
+            var initCdeclFunctions: [CDeclFunction] = []
+            var syncCdeclFunctions: [CDeclFunction] = []
+            if attributes.stateAttribute != nil || attributes.contains(.focusState) || attributes.contains(.gestureState) || attributes.contains(.appStorage) {
+                let supportTypeName: String
+                let boxName: String
+                if attributes.contains(.appStorage) {
+                    supportTypeName = "AppStorageSupport"
+                    boxName = "appStorageBox"
+                } else {
+                    supportTypeName = "StateSupport"
+                    boxName = "valueBox"
+                }
+                (initStatements, initSwift, initCdeclFunctions) = swiftUIInitState(swiftUIType, for: name, in: classDeclaration, supportTypeName: supportTypeName, boxName: boxName, attributes: attributes, modifiers: modifiers)
+                (syncStatements, syncSwift, syncCdeclFunctions) = swiftUISyncState(swiftUIType, for: name, in: classDeclaration, supportTypeName: supportTypeName, boxName: boxName, attributes: attributes, modifiers: modifiers)
+            } else if attributes.environmentAttribute != nil {
+                (initStatements, initSwift, initCdeclFunctions) = swiftUIInitEnvironment(swiftUIType, for: name, in: classDeclaration, attributes: attributes, modifiers: modifiers)
+                (syncStatements, syncSwift, syncCdeclFunctions) = swiftUISyncEnvironment(swiftUIType, for: name, in: classDeclaration, attributes: attributes, modifiers: modifiers)
+            }
+            statements += initStatements + syncStatements
+            swift += initSwift + syncSwift
+            cdeclFunctions += initCdeclFunctions + syncCdeclFunctions
         }
 
         let (bodyStatements, bodySwift, bodyCdeclFunctions) = swiftUIBodyImplementation(swiftUIType, for: classDeclaration, visibility: visibility)
@@ -1613,10 +1724,73 @@ final class KotlinBridgeToKotlinVisitor {
         swift += bodySwift
         cdeclFunctions += bodyCdeclFunctions
 
+        // Peer remembering: generate Evaluate + _ComposeContent overrides so that
+        // remember{} runs during the Render phase (inside TagModifier's stable key()
+        // scope) rather than the Evaluate phase where key() scopes don't survive
+        // structural list mutations (item add/remove).
+        if (canRememberPeer || canRememberPeerWithInputCheck) && stateVariables.isEmpty {
+            // Evaluate override: return self as Renderable to preserve this view as a
+            // node in the render tree. This skips body evaluation during Evaluate —
+            // body evaluation happens later in _ComposeContent during Render.
+            let evaluateDecl = KotlinFunctionDeclaration(name: "Evaluate")
+            if swiftUIType != .view && swiftUIType != .toolbarContent {
+                evaluateDecl.parameters = [
+                    Parameter<KotlinExpression>(externalLabel: "content", declaredType: .named("skip.ui.View", [])),
+                    Parameter<KotlinExpression>(externalLabel: "context", declaredType: .named("skip.ui.ComposeContext", [])),
+                    Parameter<KotlinExpression>(externalLabel: "options", declaredType: .int)
+                ]
+            } else {
+                evaluateDecl.parameters = [
+                    Parameter<KotlinExpression>(externalLabel: "context", declaredType: .named("skip.ui.ComposeContext", [])),
+                    Parameter<KotlinExpression>(externalLabel: "options", declaredType: .int)
+                ]
+            }
+            evaluateDecl.returnType = .named("kotlin.collections.List", [.named("skip.ui.Renderable", [])])
+            evaluateDecl.modifiers = Modifiers(visibility: .public, isOverride: true)
+            evaluateDecl.attributes.attributes.append(Attribute(signature: .named("androidx.compose.runtime.Composable", [])))
+            evaluateDecl.extras = .singleNewline
+            evaluateDecl.body = KotlinCodeBlock(statements: [
+                KotlinRawStatement(sourceCode: "return listOf(this.asRenderable())")
+            ])
+            evaluateDecl.parent = classDeclaration
+            statements.append(evaluateDecl)
+
+            // _ComposeContent override: peer remembering + manual body evaluation.
+            // This runs during Render phase, inside TagModifier's key() scope.
+            let composeContentDecl = KotlinFunctionDeclaration(name: "_ComposeContent")
+            composeContentDecl.parameters = [
+                Parameter<KotlinExpression>(externalLabel: "context", declaredType: .named("skip.ui.ComposeContext", []))
+            ]
+            composeContentDecl.modifiers = Modifiers(visibility: .public, isOverride: true)
+            composeContentDecl.attributes.attributes.append(Attribute(signature: .named("androidx.compose.runtime.Composable", [])))
+            composeContentDecl.extras = .singleNewline
+            var composeContentKotlin: [String] = []
+            if canRememberPeer {
+                composeContentKotlin.append("val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
+                composeContentKotlin.append("if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+            } else {
+                composeContentKotlin.append("val currentHash = Swift_inputsHash(Swift_peer)")
+                composeContentKotlin.append("val peerHandle = androidx.compose.runtime.remember(currentHash) { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
+                composeContentKotlin.append("if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+            }
+            // Replicate View.Evaluate's body evaluation path (observation tracking +
+            // body.Evaluate + render). We can't call super._ComposeContent because that
+            // calls self.Evaluate which returns asRenderable() — causing infinite recursion.
+            composeContentKotlin.append("skip.ui.ViewObservation.startRecording?.invoke()")
+            composeContentKotlin.append("skip.model.StateTracking.pushBody()")
+            composeContentKotlin.append("val renderables = body().Evaluate(context = context, options = 0)")
+            composeContentKotlin.append("skip.model.StateTracking.popBody()")
+            composeContentKotlin.append("skip.ui.ViewObservation.stopAndObserve?.invoke()")
+            composeContentKotlin.append("for (renderable in renderables) { renderable.Render(context = context) }")
+            composeContentDecl.body = KotlinCodeBlock(statements: composeContentKotlin.map { KotlinRawStatement(sourceCode: $0) })
+            composeContentDecl.parent = classDeclaration
+            statements.append(composeContentDecl)
+        }
+
         return (stateVariables, statements, swift, cdeclFunctions)
     }
 
-    private func swiftUIEvaluate(_ swiftUIType: TypeSignature.SwiftUIType, for classDeclaration: KotlinClassDeclaration, stateVariables: [(name: String, attributes: Attributes, modifiers: Modifiers)]) -> [KotlinStatement] {
+    private func swiftUIEvaluate(_ swiftUIType: TypeSignature.SwiftUIType, for classDeclaration: KotlinClassDeclaration, stateVariables: [(name: String, attributes: Attributes, modifiers: Modifiers)], canRememberPeer: Bool = false, canRememberPeerWithInputCheck: Bool = false) -> [KotlinStatement] {
         let functionDeclaration = KotlinFunctionDeclaration(name: "Evaluate")
         var functionParameters: [Parameter<KotlinExpression>] = []
         if swiftUIType != .view && swiftUIType != .toolbarContent {
@@ -1632,6 +1806,14 @@ final class KotlinBridgeToKotlinVisitor {
 
         let classType = ClassType(classDeclaration)
         var bodyKotlin: [String] = []
+        if canRememberPeer {
+            bodyKotlin.append("val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
+            bodyKotlin.append("if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+        } else if canRememberPeerWithInputCheck {
+            bodyKotlin.append("val currentHash = Swift_inputsHash(Swift_peer)")
+            bodyKotlin.append("val peerHandle = androidx.compose.runtime.remember(currentHash) { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
+            bodyKotlin.append("if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+        }
         for (name, attributes, _) in stateVariables {
             if attributes.stateAttribute != nil || attributes.contains(.focusState) || attributes.contains(.gestureState) || attributes.contains(.appStorage) {
                 let supportTypeName = attributes.contains(.appStorage) ? "AppStorageSupport" : "StateSupport"
