@@ -10178,4 +10178,43 @@ final class BridgeToKotlinTests: XCTestCase {
         // body() should be clean (no peer remembering prefix)
         XCTAssertTrue(kotlin.contains("ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)"), "body() should be clean without peer remembering prefix")
     }
+
+    // Phase 3: @State + let-with-default combined — peer remembering coexists with state variables
+    // Previously blocked by stateVariables.isEmpty guard. Views like CounterCard with both
+    // @State var count and let instanceID = UUID() should get peer remembering AND state sync.
+    func testStateAndLetWithDefaultCombinedCodegen() async throws {
+        let swiftBridgeString = """
+        import SkipFuseUI
+        struct V: View {
+            @State var count: Int = 0
+            let instanceID = UUID()
+            var body: some View {
+                Text("\\(count)")
+            }
+        }
+        """
+        let bridgeFile = try tmpFile(named: "Bridge.swift", contents: swiftBridgeString)
+        let codebaseInfo = CodebaseInfo()
+        let tp = Transpiler(transpileFiles: [], bridgeFiles: [Source.FilePath(path: bridgeFile.path)], autoBridge: .public, codebaseInfo: codebaseInfo, transformers: transformers)
+        var transpilations: [Transpilation] = []
+        try await tp.transpile { transpilations.append($0) }
+        let kotlin = transpilations.first(where: { $0.output.file.name.hasSuffix(".kt") })?.output.content ?? ""
+        // Peer remembering infrastructure should be generated (not blocked by @State)
+        XCTAssertTrue(kotlin.contains("SwiftPeerHandle"), "Mixed @State + let-with-default view should generate SwiftPeerHandle class")
+        XCTAssertTrue(kotlin.contains("Swift_retain"), "Mixed view should generate Swift_retain for peer lifecycle")
+        // Evaluate override returns self as Renderable (defers body eval to _ComposeContent)
+        XCTAssertTrue(kotlin.contains("override fun Evaluate("), "Should generate Evaluate override")
+        XCTAssertTrue(kotlin.contains("listOf(this.asRenderable())"), "Evaluate should return self as Renderable")
+        // _ComposeContent has peer remembering
+        XCTAssertTrue(kotlin.contains("override fun _ComposeContent("), "Should generate _ComposeContent override with peer remembering")
+        XCTAssertTrue(kotlin.contains("remember {"), "Should use remember for peer (no constructor params)")
+        // _ComposeContent also has @State sync (rememberSaveable + syncState)
+        XCTAssertTrue(kotlin.contains("rememberSaveable"), "Mixed view _ComposeContent should include state sync via rememberSaveable")
+        XCTAssertTrue(kotlin.contains("mutableStateOf"), "Mixed view _ComposeContent should include mutableStateOf for @State")
+        XCTAssertTrue(kotlin.contains("Swift_initState_count"), "Mixed view should generate Swift_initState_count for @State var count")
+        XCTAssertTrue(kotlin.contains("Swift_syncState_count"), "Mixed view should generate Swift_syncState_count for @State var count")
+        // Body evaluation in _ComposeContent (observation tracking + render)
+        XCTAssertTrue(kotlin.contains("ViewObservation.startRecording"), "_ComposeContent should include observation tracking")
+        XCTAssertTrue(kotlin.contains("body().Evaluate(context = context, options = 0)"), "_ComposeContent should evaluate body")
+    }
 }

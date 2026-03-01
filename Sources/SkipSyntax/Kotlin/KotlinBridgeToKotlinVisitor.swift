@@ -1623,7 +1623,10 @@ final class KotlinBridgeToKotlinVisitor {
         // and transpiled views (bridgable params as Kotlin members)
         let canRememberPeerWithInputCheck = hasLetWithDefault && !allConstructorParamNames.isEmpty && !hasNonBridgableConstructorParams
 
-        if !stateVariables.isEmpty {
+        if !stateVariables.isEmpty && !(canRememberPeer || canRememberPeerWithInputCheck) {
+            // Generate Evaluate override for @State-only views (no peer remembering).
+            // When peer remembering is active, the Evaluate override is generated below
+            // with state sync merged into _ComposeContent instead.
             statements += swiftUIEvaluate(swiftUIType, for: classDeclaration, stateVariables: stateVariables)
         }
         if canRememberPeer || canRememberPeerWithInputCheck {
@@ -1731,10 +1734,12 @@ final class KotlinBridgeToKotlinVisitor {
         // remember{} runs during the Render phase (inside TagModifier's stable key()
         // scope) rather than the Evaluate phase where key() scopes don't survive
         // structural list mutations (item add/remove).
-        if (canRememberPeer || canRememberPeerWithInputCheck) && stateVariables.isEmpty {
+        if canRememberPeer || canRememberPeerWithInputCheck {
             // Evaluate override: return self as Renderable to preserve this view as a
             // node in the render tree. This skips body evaluation during Evaluate —
             // body evaluation happens later in _ComposeContent during Render.
+            // This replaces the @State-only Evaluate override (which calls super.Evaluate)
+            // because peer remembering needs body evaluation deferred to _ComposeContent.
             let evaluateDecl = KotlinFunctionDeclaration(name: "Evaluate")
             if swiftUIType != .view && swiftUIType != .toolbarContent {
                 evaluateDecl.parameters = [
@@ -1758,8 +1763,9 @@ final class KotlinBridgeToKotlinVisitor {
             evaluateDecl.parent = classDeclaration
             statements.append(evaluateDecl)
 
-            // _ComposeContent override: peer remembering + manual body evaluation.
+            // _ComposeContent override: peer remembering + state sync + manual body evaluation.
             // This runs during Render phase, inside TagModifier's key() scope.
+            // Generated for ALL peer-remembering views, including those with @State.
             let composeContentDecl = KotlinFunctionDeclaration(name: "_ComposeContent")
             composeContentDecl.parameters = [
                 Parameter<KotlinExpression>(externalLabel: "context", declaredType: .named("skip.ui.ComposeContext", []))
@@ -1777,6 +1783,21 @@ final class KotlinBridgeToKotlinVisitor {
                 composeContentKotlin.append("val peerHandle = androidx.compose.runtime.remember(currentHash) { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
                 composeContentKotlin.append("val swapped = peerHandle.peer != Swift_peer")
                 composeContentKotlin.append("if (swapped) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+            }
+            // When the view has @State variables, sync them here in _ComposeContent
+            // (since Evaluate now returns asRenderable() instead of calling super.Evaluate
+            // which would normally handle state sync).
+            let classType = ClassType(classDeclaration)
+            for (name, attributes, _) in stateVariables {
+                if attributes.stateAttribute != nil || attributes.contains(.focusState) || attributes.contains(.gestureState) || attributes.contains(.appStorage) {
+                    let supportTypeName = attributes.contains(.appStorage) ? "AppStorageSupport" : "StateSupport"
+                    composeContentKotlin.append("val remembered\(name) = androidx.compose.runtime.saveable.rememberSaveable(stateSaver = context.stateSaver as androidx.compose.runtime.saveable.Saver<skip.ui.\(supportTypeName), Any>) { androidx.compose.runtime.mutableStateOf(Swift_initState_\(name)(\(classType.peerExternalArgument))) }")
+                    composeContentKotlin.append("Swift_syncState_\(name)(\(classType.peerExternalArgument), remembered\(name).value)")
+                } else if attributes.environmentAttribute != nil {
+                    composeContentKotlin.append("val envkey\(name) = Swift_initEnvironment_\(name)(\(classType.peerExternalArgument))")
+                    composeContentKotlin.append("val envvalue\(name) = skip.ui.EnvironmentValues.shared.bridged(envkey\(name))")
+                    composeContentKotlin.append("Swift_syncEnvironment_\(name)(\(classType.peerExternalArgument), envvalue\(name))")
+                }
             }
             // Replicate View.Evaluate's body evaluation path (observation tracking +
             // body.Evaluate + render). We can't call super._ComposeContent because that
