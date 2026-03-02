@@ -9402,7 +9402,6 @@ final class BridgeToKotlinTests: XCTestCase {
             }
 
             override fun hashCode(): Int = Swift_peer.hashCode()
-            private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }
             private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)
 
             override fun body(): skip.ui.View {
@@ -9415,8 +9414,7 @@ final class BridgeToKotlinTests: XCTestCase {
 
             @androidx.compose.runtime.Composable
             override fun _ComposeContent(context: skip.ui.ComposeContext) {
-                val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }
-                if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }
+                Swift_peer = skip.ui.rememberViewPeer(slotKey = "V", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release)
                 skip.ui.ViewObservation.startRecording?.invoke()
                 skip.model.StateTracking.pushBody()
                 val renderables = body().Evaluate(context = context, options = 0)
@@ -9562,7 +9560,6 @@ final class BridgeToKotlinTests: XCTestCase {
             }
 
             override fun hashCode(): Int = Swift_peer.hashCode()
-            private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }
             private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)
 
             override fun body(): skip.ui.View {
@@ -9575,8 +9572,7 @@ final class BridgeToKotlinTests: XCTestCase {
 
             @androidx.compose.runtime.Composable
             override fun _ComposeContent(context: skip.ui.ComposeContext) {
-                val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }
-                if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }
+                Swift_peer = skip.ui.rememberViewPeer(slotKey = "V", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release)
                 skip.ui.ViewObservation.startRecording?.invoke()
                 skip.model.StateTracking.pushBody()
                 val renderables = body().Evaluate(context = context, options = 0)
@@ -9873,9 +9869,9 @@ final class BridgeToKotlinTests: XCTestCase {
             }
 
             override fun hashCode(): Int = Swift_peer.hashCode()
-            private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }
             private external fun Swift_inputsHash(Swift_peer: skip.bridge.SwiftObjectPointer): Long
             private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)
+            private external fun Swift_refreshPeer(Swift_peer: skip.bridge.SwiftObjectPointer, fresh_peer: skip.bridge.SwiftObjectPointer)
 
             override fun body(): skip.ui.View {
                 return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
@@ -9888,8 +9884,7 @@ final class BridgeToKotlinTests: XCTestCase {
             @androidx.compose.runtime.Composable
             override fun _ComposeContent(context: skip.ui.ComposeContext) {
                 val currentHash = Swift_inputsHash(Swift_peer)
-                val peerHandle = androidx.compose.runtime.remember(currentHash) { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }
-                if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }
+                Swift_peer = skip.ui.rememberViewPeer(slotKey = "V", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release, inputsHash = currentHash, refreshPeerFn = ::Swift_refreshPeer)
                 skip.ui.ViewObservation.startRecording?.invoke()
                 skip.model.StateTracking.pushBody()
                 val renderables = body().Evaluate(context = context, options = 0)
@@ -9990,6 +9985,12 @@ final class BridgeToKotlinTests: XCTestCase {
         @_cdecl("Java_V_Swift_1retain")
         public func V_Swift_retain(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
             _ = Swift_peer.retained(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1refreshPeer")
+        public func V_Swift_refreshPeer(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer, _ fresh_peer: SwiftObjectPointer) {
+            var cached_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            let fresh_swift: SwiftValueTypeBox<V> = fresh_peer.pointee()!
+            cached_swift.value.title = fresh_swift.value.title
         }
         @_cdecl("Java_V_Swift_1composableBody")
         public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {
@@ -10165,16 +10166,18 @@ final class BridgeToKotlinTests: XCTestCase {
         var transpilations: [Transpilation] = []
         try await tp.transpile { transpilations.append($0) }
         let kotlin = transpilations.first(where: { $0.output.file.name.hasSuffix(".kt") })?.output.content ?? ""
-        // Verify Phase 2 peer remembering: Evaluate returns asRenderable(), _ComposeContent has remember
-        XCTAssertTrue(kotlin.contains("SwiftPeerHandle"), "Internal view should generate SwiftPeerHandle class")
+        // Verify Phase 2 peer remembering: Evaluate returns asRenderable(), _ComposeContent has rememberViewPeer
+        XCTAssertFalse(kotlin.contains("class SwiftPeerHandle"), "SwiftPeerHandle class should NOT be generated (lives in PeerStore.swift)")
         XCTAssertTrue(kotlin.contains("Swift_inputsHash"), "Internal view should generate Swift_inputsHash for input-change detection")
         XCTAssertTrue(kotlin.contains("Swift_retain"), "Internal view should generate Swift_retain for peer lifecycle")
+        XCTAssertTrue(kotlin.contains("Swift_refreshPeer"), "Internal view should generate Swift_refreshPeer for input refresh")
         // Evaluate override returns self as Renderable (no body evaluation during Evaluate)
         XCTAssertTrue(kotlin.contains("override fun Evaluate("), "Should generate Evaluate override returning asRenderable()")
         XCTAssertTrue(kotlin.contains("listOf(this.asRenderable())"), "Evaluate should return self as Renderable")
-        // _ComposeContent has peer remembering with input hash
+        // _ComposeContent has peer remembering via rememberViewPeer
         XCTAssertTrue(kotlin.contains("override fun _ComposeContent("), "Should generate _ComposeContent override with peer remembering")
-        XCTAssertTrue(kotlin.contains("remember(currentHash)"), "Internal view should use keyed remember with input hash")
+        XCTAssertTrue(kotlin.contains("skip.ui.rememberViewPeer("), "Internal view should use rememberViewPeer")
+        XCTAssertTrue(kotlin.contains("refreshPeerFn = ::Swift_refreshPeer"), "Phase 2 should pass refreshPeerFn")
         // body() should be clean (no peer remembering prefix)
         XCTAssertTrue(kotlin.contains("ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)"), "body() should be clean without peer remembering prefix")
     }
@@ -10200,14 +10203,14 @@ final class BridgeToKotlinTests: XCTestCase {
         try await tp.transpile { transpilations.append($0) }
         let kotlin = transpilations.first(where: { $0.output.file.name.hasSuffix(".kt") })?.output.content ?? ""
         // Peer remembering infrastructure should be generated (not blocked by @State)
-        XCTAssertTrue(kotlin.contains("SwiftPeerHandle"), "Mixed @State + let-with-default view should generate SwiftPeerHandle class")
+        XCTAssertFalse(kotlin.contains("class SwiftPeerHandle"), "SwiftPeerHandle class should NOT be generated (lives in PeerStore.swift)")
         XCTAssertTrue(kotlin.contains("Swift_retain"), "Mixed view should generate Swift_retain for peer lifecycle")
         // Evaluate override returns self as Renderable (defers body eval to _ComposeContent)
         XCTAssertTrue(kotlin.contains("override fun Evaluate("), "Should generate Evaluate override")
         XCTAssertTrue(kotlin.contains("listOf(this.asRenderable())"), "Evaluate should return self as Renderable")
-        // _ComposeContent has peer remembering
+        // _ComposeContent has peer remembering via rememberViewPeer
         XCTAssertTrue(kotlin.contains("override fun _ComposeContent("), "Should generate _ComposeContent override with peer remembering")
-        XCTAssertTrue(kotlin.contains("remember {"), "Should use remember for peer (no constructor params)")
+        XCTAssertTrue(kotlin.contains("skip.ui.rememberViewPeer("), "Should use rememberViewPeer for peer (no constructor params)")
         // _ComposeContent also has @State sync (rememberSaveable + syncState)
         XCTAssertTrue(kotlin.contains("rememberSaveable"), "Mixed view _ComposeContent should include state sync via rememberSaveable")
         XCTAssertTrue(kotlin.contains("mutableStateOf"), "Mixed view _ComposeContent should include mutableStateOf for @State")
