@@ -1631,9 +1631,8 @@ final class KotlinBridgeToKotlinVisitor {
         }
         if canRememberPeer || canRememberPeerWithInputCheck {
             if canRememberPeer {
-                // Generate SwiftPeerHandle helper class and Swift_retain external function for peer remembering
-                let peerHandleClass = KotlinRawStatement(sourceCode: "private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }")
-                statements.append(peerHandleClass)
+                // Generate Swift_retain external function for rememberViewPeer
+                // (SwiftPeerHandle class is no longer generated here -- it lives in PeerStore.swift)
                 let retainExternal = KotlinRawStatement(sourceCode: "private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)")
                 statements.append(retainExternal)
 
@@ -1650,18 +1649,18 @@ final class KotlinBridgeToKotlinVisitor {
                 }
                 cdeclFunctions.append(CDeclFunction(name: retainCdecl.cdeclFunctionName, cdecl: retainCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .void, APIFlags(), nil), body: retainBody))
             } else if canRememberPeerWithInputCheck {
-                // Phase 2: Generate SwiftPeerHandle (same shape as Phase 1), Swift_inputsHash, and Swift_retain
-                // Uses remember(key) with inputsHash as key — Compose handles invalidation automatically
-                let peerHandleClass = KotlinRawStatement(sourceCode: "private class SwiftPeerHandle(val peer: Long, private val retainFn: (Long) -> Unit, private val releaseFn: (Long) -> Unit) : androidx.compose.runtime.RememberObserver { init { retainFn(peer) }; fun swapFrom(stale: Long) { retainFn(peer); releaseFn(stale) }; override fun onRemembered() {}; override fun onAbandoned() { releaseFn(peer) }; override fun onForgotten() { releaseFn(peer) } }")
-                statements.append(peerHandleClass)
+                // Phase 2: Generate Swift_inputsHash, Swift_retain, and Swift_refreshPeer externals
+                // (SwiftPeerHandle class is no longer generated here -- it lives in PeerStore.swift)
                 let inputsHashExternal = KotlinRawStatement(sourceCode: "private external fun Swift_inputsHash(Swift_peer: skip.bridge.SwiftObjectPointer): Long")
                 statements.append(inputsHashExternal)
                 let retainExternal = KotlinRawStatement(sourceCode: "private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)")
                 statements.append(retainExternal)
+                let refreshPeerExternal = KotlinRawStatement(sourceCode: "private external fun Swift_refreshPeer(Swift_peer: skip.bridge.SwiftObjectPointer, fresh_peer: skip.bridge.SwiftObjectPointer)")
+                statements.append(refreshPeerExternal)
 
                 let classType = ClassType(classDeclaration)
 
-                // Generate Swift_inputsHash cdecl
+                // Generate Swift_inputsHash cdecl (unchanged)
                 let inputsHashCdecl = CDeclFunction.declaration(for: classDeclaration, isCompanion: false, name: "Swift_inputsHash", translator: translator)
                 var inputsHashBody: [String] = []
                 switch classType {
@@ -1675,15 +1674,12 @@ final class KotlinBridgeToKotlinVisitor {
                 inputsHashBody.append("var hasher = Hasher()")
                 for paramName in allConstructorParamNames {
                     let access = classType == .value ? "peer_swift.value.\(paramName)" : "peer_swift.\(paramName)"
-                    // Only hash value-semantic types. Reference types (classes) are skipped because
-                    // their identity/hash is allocation-based and unstable across recompositions
-                    // (e.g. TCA Store scopes are recreated when sibling array elements change).
                     inputsHashBody.append("if !(type(of: \(access)) is AnyClass), let h = \(access) as? AnyHashable { hasher.combine(h) }")
                 }
                 inputsHashBody.append("return Int64(hasher.finalize())")
                 cdeclFunctions.append(CDeclFunction(name: inputsHashCdecl.cdeclFunctionName, cdecl: inputsHashCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .int64, APIFlags(), nil), body: inputsHashBody))
 
-                // Generate Swift_retain cdecl (same as Phase 1)
+                // Generate Swift_retain cdecl (unchanged)
                 let retainCdecl = CDeclFunction.declaration(for: classDeclaration, isCompanion: false, name: "Swift_retain", translator: translator)
                 var retainBody: [String] = []
                 switch classType {
@@ -1695,6 +1691,31 @@ final class KotlinBridgeToKotlinVisitor {
                     retainBody.append("_ = Swift_peer.retained(as: SwiftValueTypeBox<\(classDeclaration.signature)>.self)")
                 }
                 cdeclFunctions.append(CDeclFunction(name: retainCdecl.cdeclFunctionName, cdecl: retainCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .void, APIFlags(), nil), body: retainBody))
+
+                // Generate Swift_refreshPeer cdecl -- copies constructor params from fresh peer into cached peer.
+                // The cached peer keeps its let-with-default state; only constructor params are updated.
+                let refreshPeerCdecl = CDeclFunction.declaration(for: classDeclaration, isCompanion: false, name: "Swift_refreshPeer", translator: translator)
+                var refreshPeerBody: [String] = []
+                switch classType {
+                case .generic:
+                    refreshPeerBody.append("var cached_swift: \(classDeclaration.signature.typeErasedClass) = Swift_peer.pointee()!")
+                    refreshPeerBody.append("let fresh_swift: \(classDeclaration.signature.typeErasedClass) = fresh_peer.pointee()!")
+                case .reference:
+                    refreshPeerBody.append("var cached_swift: \(classDeclaration.signature) = Swift_peer.pointee()!")
+                    refreshPeerBody.append("let fresh_swift: \(classDeclaration.signature) = fresh_peer.pointee()!")
+                default:
+                    refreshPeerBody.append("var cached_swift: SwiftValueTypeBox<\(classDeclaration.signature)> = Swift_peer.pointee()!")
+                    refreshPeerBody.append("let fresh_swift: SwiftValueTypeBox<\(classDeclaration.signature)> = fresh_peer.pointee()!")
+                }
+                for paramName in allConstructorParamNames {
+                    let cachedAccess = classType == .value ? "cached_swift.value.\(paramName)" : "cached_swift.\(paramName)"
+                    let freshAccess = classType == .value ? "fresh_swift.value.\(paramName)" : "fresh_swift.\(paramName)"
+                    refreshPeerBody.append("\(cachedAccess) = \(freshAccess)")
+                }
+                // refreshPeer takes two peer parameters: cached + fresh
+                let refreshPeerParams = [classType.peerSwiftParameter,
+                                         Parameter<SwiftExpression>(externalLabel: "fresh_peer", declaredType: .named("skip.bridge.SwiftObjectPointer", []), apiFlags: APIFlags())]
+                cdeclFunctions.append(CDeclFunction(name: refreshPeerCdecl.cdeclFunctionName, cdecl: refreshPeerCdecl.cdecl, signature: .function(refreshPeerParams, .void, APIFlags(), nil), body: refreshPeerBody))
             }
         }
         for (name, attributes, modifiers) in stateVariables {
@@ -1775,14 +1796,10 @@ final class KotlinBridgeToKotlinVisitor {
             composeContentDecl.extras = .singleNewline
             var composeContentKotlin: [String] = []
             if canRememberPeer {
-                composeContentKotlin.append("val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
-                composeContentKotlin.append("val swapped = peerHandle.peer != Swift_peer")
-                composeContentKotlin.append("if (swapped) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+                composeContentKotlin.append("Swift_peer = skip.ui.rememberViewPeer(slotKey = \"\(classDeclaration.signature)\", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release)")
             } else {
                 composeContentKotlin.append("val currentHash = Swift_inputsHash(Swift_peer)")
-                composeContentKotlin.append("val peerHandle = androidx.compose.runtime.remember(currentHash) { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
-                composeContentKotlin.append("val swapped = peerHandle.peer != Swift_peer")
-                composeContentKotlin.append("if (swapped) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+                composeContentKotlin.append("Swift_peer = skip.ui.rememberViewPeer(slotKey = \"\(classDeclaration.signature)\", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release, inputsHash = currentHash, refreshPeerFn = ::Swift_refreshPeer)")
             }
             // When the view has @State variables, sync them here in _ComposeContent
             // (since Evaluate now returns asRenderable() instead of calling super.Evaluate
@@ -1833,12 +1850,10 @@ final class KotlinBridgeToKotlinVisitor {
         let classType = ClassType(classDeclaration)
         var bodyKotlin: [String] = []
         if canRememberPeer {
-            bodyKotlin.append("val peerHandle = androidx.compose.runtime.remember { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
-            bodyKotlin.append("if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+            bodyKotlin.append("Swift_peer = skip.ui.rememberViewPeer(slotKey = \"\(classDeclaration.signature)\", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release)")
         } else if canRememberPeerWithInputCheck {
             bodyKotlin.append("val currentHash = Swift_inputsHash(Swift_peer)")
-            bodyKotlin.append("val peerHandle = androidx.compose.runtime.remember(currentHash) { SwiftPeerHandle(Swift_peer, ::Swift_retain, ::Swift_release) }")
-            bodyKotlin.append("if (peerHandle.peer != Swift_peer) { peerHandle.swapFrom(Swift_peer); Swift_peer = peerHandle.peer }")
+            bodyKotlin.append("Swift_peer = skip.ui.rememberViewPeer(slotKey = \"\(classDeclaration.signature)\", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release, inputsHash = currentHash, refreshPeerFn = ::Swift_refreshPeer)")
         }
         for (name, attributes, _) in stateVariables {
             if attributes.stateAttribute != nil || attributes.contains(.focusState) || attributes.contains(.gestureState) || attributes.contains(.appStorage) {
