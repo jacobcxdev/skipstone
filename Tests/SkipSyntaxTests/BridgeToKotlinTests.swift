@@ -9990,7 +9990,7 @@ final class BridgeToKotlinTests: XCTestCase {
         public func V_Swift_refreshPeer(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer, _ fresh_peer: SwiftObjectPointer) {
             var cached_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
             let fresh_swift: SwiftValueTypeBox<V> = fresh_peer.pointee()!
-            cached_swift.value.title = fresh_swift.value.title
+            cached_swift.value = fresh_swift.value
         }
         @_cdecl("Java_V_Swift_1composableBody")
         public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {

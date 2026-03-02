@@ -1707,14 +1707,22 @@ final class KotlinBridgeToKotlinVisitor {
                     refreshPeerBody.append("var cached_swift: SwiftValueTypeBox<\(classDeclaration.signature)> = Swift_peer.pointee()!")
                     refreshPeerBody.append("let fresh_swift: SwiftValueTypeBox<\(classDeclaration.signature)> = fresh_peer.pointee()!")
                 }
-                for paramName in allConstructorParamNames {
-                    let cachedAccess = classType == .value ? "cached_swift.value.\(paramName)" : "cached_swift.\(paramName)"
-                    let freshAccess = classType == .value ? "fresh_swift.value.\(paramName)" : "fresh_swift.\(paramName)"
-                    refreshPeerBody.append("\(cachedAccess) = \(freshAccess)")
+                if classType == .value {
+                    // Value types: replace the entire boxed value. Individual property assignment
+                    // fails because struct properties are `let`. Replacing the whole value is correct
+                    // because refreshPeer is only called when inputsHash changed (constructor params
+                    // differ), which in SwiftUI means a new struct instance anyway.
+                    refreshPeerBody.append("cached_swift.value = fresh_swift.value")
+                } else {
+                    for paramName in allConstructorParamNames {
+                        let cachedAccess = "cached_swift.\(paramName)"
+                        let freshAccess = "fresh_swift.\(paramName)"
+                        refreshPeerBody.append("\(cachedAccess) = \(freshAccess)")
+                    }
                 }
                 // refreshPeer takes two peer parameters: cached + fresh
                 let refreshPeerParams = [classType.peerSwiftParameter,
-                                         Parameter<SwiftExpression>(externalLabel: "fresh_peer", declaredType: .named("skip.bridge.SwiftObjectPointer", []), apiFlags: APIFlags())]
+                                         TypeSignature.Parameter(label: "fresh_peer", type: .swiftObjectPointer(kotlin: false))]
                 cdeclFunctions.append(CDeclFunction(name: refreshPeerCdecl.cdeclFunctionName, cdecl: refreshPeerCdecl.cdecl, signature: .function(refreshPeerParams, .void, APIFlags(), nil), body: refreshPeerBody))
             }
         }
