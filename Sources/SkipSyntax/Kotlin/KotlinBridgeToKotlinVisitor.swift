@@ -1593,22 +1593,27 @@ final class KotlinBridgeToKotlinVisitor {
         } || classDeclaration.members.contains(where: {
             ($0 as? KotlinVariableDeclaration)?.isLetWithDefault == true
         })
-        // Peer remembering: collect constructor param info to determine strategy.
-        // A constructor param is a stored property without a default value:
-        // - Bridgable: KotlinVariableDeclaration with value==nil and !isLetWithDefault
-        //   (isLetWithDefault properties had their value stripped by updateDeclaration)
-        // - Non-bridgable: UnbridgedMember.uninitializedStructProperty
+        // Peer remembering: collect external input param info to determine strategy.
+        // An external input is any stored property settable via the memberwise initializer:
+        // - Without default (required): value==nil — must be passed by parent
+        // - var with default (optional): !isLet && value!=nil — parent CAN pass a new value
+        // Both need tracking so inputsHash detects when the parent passes new values.
+        // - Bridgable: KotlinVariableDeclaration (isLetWithDefault already excluded)
+        // - Non-bridgable: UnbridgedMember.uninitializedStructProperty or .varWithDefault
         let bridgableConstructorParamNames: [String] = classDeclaration.members.compactMap { member in
             guard let varDecl = member as? KotlinVariableDeclaration,
                   !varDecl.modifiers.isStatic,
-                  varDecl.value == nil,
                   !varDecl.isLetWithDefault,
                   !varDecl.isGenerated,
                   varDecl.role == .property else { return nil }
             return varDecl.preEscapedPropertyName ?? varDecl.propertyName
         }
         let unbridgedConstructorParamNames: [String] = classDeclaration.unbridgedMembers.compactMap {
-            if case .uninitializedStructProperty(let name) = $0, !name.isEmpty { return name } else { return nil }
+            switch $0 {
+            case .uninitializedStructProperty(let name) where !name.isEmpty: return name
+            case .varWithDefault(let name) where !name.isEmpty: return name
+            default: return nil
+            }
         }
         let hasNonBridgableConstructorParams = classDeclaration.unbridgedMembers.contains {
             if case .uninitializedStructProperty(let name) = $0 { return name.isEmpty } else { return false }

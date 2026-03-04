@@ -1738,6 +1738,7 @@ enum UnbridgedMember: Hashable {
     case swiftUIStateProperty(String, Attributes, Modifiers) // Name, attributes, modifiers
     case observableType(String)
     case letWithDefault(String)
+    case varWithDefault(String)
 
     var isSwiftUIStateProperty: Bool {
         if case .swiftUIStateProperty = self {
@@ -1883,6 +1884,24 @@ final class VariableDeclaration: Statement {
                     return []
                 }
                 return [UnbridgedMemberDeclaration(member: .letWithDefault(name), syntax: syntax, extras: extras, in: syntaxTree)]
+            } else if syntaxTree.isBridgeFile,
+                      context.memberOf?.type == .structDeclaration,
+                      !modifiers.isStatic,
+                      variableDecl.bindingSpecifier.text != "let",
+                      variableDecl.bindings.first?.initializer?.value != nil,
+                      variableDecl.bindings.first?.accessorBlock == nil,
+                      attributes.stateAttribute == nil,
+                      attributes.environmentAttribute == nil,
+                      !attributes.contains(.focusState),
+                      !attributes.contains(.gestureState),
+                      !attributes.contains(.appStorage) {
+                // Non-bridgable var-with-default: track for input hash tracking.
+                // In SwiftUI, `var prop: T = default` is part of the memberwise initializer —
+                // the parent can pass a new value, so the transpiler must include it in inputsHash.
+                guard let optionalName = variableDecl.bindings.first?.pattern.identifierPatterns(in: syntaxTree)?.map(\.name?.removingBacktickEscaping).first, let name = optionalName else {
+                    return []
+                }
+                return [UnbridgedMemberDeclaration(member: .varWithDefault(name), syntax: syntax, extras: extras, in: syntaxTree)]
             } else {
                 return []
             }

@@ -605,11 +605,42 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
                 """
             }
 
+            // Handle local path dependencies not covered by dependencyIdPaths.
+            // Plugin-only packages (e.g., "skip") aren't target dependencies, so they
+            // aren't passed via --dependency. But SPM still needs to resolve them when
+            // building the transpiled Package.swift. We scan the original Package.swift
+            // for .package(path:) declarations and create Packages/ symlinks for any
+            // that weren't already handled above.
+            let projectRoot = projectFolderPath.appending(components: "..", "..")
+            let originalPackageSwift = projectRoot.appending(component: "Package.swift")
+            if fs.exists(originalPackageSwift) {
+                let packageSwiftString = try fs.readFileContents(originalPackageSwift).withData { String(decoding: $0, as: UTF8.self) }
+                let pathPattern = try NSRegularExpression(pattern: #"\.package\(\s*path:\s*"([^"]+)""#)
+                let nsString = packageSwiftString as NSString
+                let matches = pathPattern.matches(in: packageSwiftString, range: NSRange(location: 0, length: nsString.length))
+                for match in matches {
+                    let relativePath = nsString.substring(with: match.range(at: 1))
+                    let packageID = relativePath.split(separator: "/").last.map(String.init) ?? relativePath
+                    if createdIds.contains(packageID) { continue }
+                    let resolvedPath = try AbsolutePath(validating: projectRoot.appending(try RelativePath(validating: relativePath)).pathString)
+                    if fs.exists(resolvedPath) {
+                        let dependencyPackageLink = try AbsolutePath(packagesLinkFolder, validating: packageID)
+                        try addLink(dependencyPackageLink, pointingAt: resolvedPath, relative: false)
+                        createdIds.insert(packageID)
+                        packageAddendum += """
+                        useLocalPackage(named: "\(packageID)", id: "\(packageID)", dependencies: &package.dependencies)
+
+                        """
+                        info("added local path dependency link for \(packageID) -> \(resolvedPath)")
+                    }
+                }
+            }
+
             // The source of the link tree needs to be the root project for the module in question, which we don't have access to (it can't be the `rootPath`, since that will be the topmost package that resulted in the transpiler invocation, which may not be the module in question).
             // So we need to guess from the projectFolderPath, which will be something like `/path/to/project-name/Sources/TargetName` by tacking `../..` to the end of the path.
             // WARNING: this is delicate, because there is nothing guaranteeing that the project follows the convention of `Sources/TargetName` for their modules!
             //let mirrorSource = rootPath
-            let mirrorSource = projectFolderPath.appending(components: "..", "..")
+            let mirrorSource = projectRoot
 
             //warn("creating absolute merged link tree from: swiftLinkFolder=\(swiftLinkFolder) to mirrorSource=\(mirrorSource) (rootPath=\(rootPath)) with dependencyIdPaths=\(dependencyIdPaths)")
             try createMirroredLinkTree(swiftLinkFolder, pointingAt: mirrorSource, shallow: true, excluding: ["Packages", "Package.resolved", ".build", ".swiftpm", "skip-export", "build"]) { destPath, path in
