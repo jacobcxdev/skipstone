@@ -1739,6 +1739,9 @@ enum UnbridgedMember: Hashable {
     case observableType(String)
     case letWithDefault(String)
     case varWithDefault(String)
+    /// Stored property that was decoded at .api level but may not be representable in Kotlin.
+    /// Unlike `uninitializedStructProperty`, this does NOT suppress constructor generation.
+    case possibleConstructorParam(String)
 
     var isSwiftUIStateProperty: Bool {
         if case .swiftUIStateProperty = self {
@@ -1915,6 +1918,24 @@ final class VariableDeclaration: Statement {
             let bindingExtras = index == 0 ? extras : nil
             let statement = try decode(syntax: syntax, lastTypeSyntax: lastTypeSyntax, level: decodeLevel, isLet: isLet, asyncBehavior: isAsync ? .async : .sync, attributes: attributes, modifiers: modifiers, extras: bindingExtras, context: context, in: syntaxTree)
             statements.append(statement)
+        }
+        // Also track stored properties in bridge file structs as unbridged members when
+        // decodeLevel is .api. At .api level, properties are decoded but their types may not
+        // be representable in Kotlin — the transpiler may drop them. This ensures they appear
+        // in unbridgedConstructorParamNames for peer remembering. Skip .full (fully transpiled
+        // #if SKIP blocks where all properties are represented) and .none (already handled above).
+        // Uses .possibleConstructorParam to avoid side effects like suppressDefaultConstructorGeneration.
+        if decodeLevel == .api, syntaxTree.isBridgeFile, context.memberOf?.type == .structDeclaration, !modifiers.isStatic,
+           let firstBinding = variableDecl.bindings.first,
+           firstBinding.accessorBlock == nil {
+            let isState = attributes.stateAttribute != nil || attributes.environmentAttribute != nil
+                || attributes.contains(.focusState) || attributes.contains(.gestureState) || attributes.contains(.appStorage)
+            let hasInitializer = firstBinding.initializer?.value != nil
+            if !isState, !hasInitializer,
+               let optionalName = firstBinding.pattern.identifierPatterns(in: syntaxTree)?.map(\.name?.removingBacktickEscaping).first,
+               let name = optionalName {
+                statements.append(UnbridgedMemberDeclaration(member: .possibleConstructorParam(name), syntax: firstBinding, extras: nil, in: syntaxTree))
+            }
         }
         return statements
     }

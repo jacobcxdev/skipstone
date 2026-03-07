@@ -1612,14 +1612,26 @@ final class KotlinBridgeToKotlinVisitor {
             switch $0 {
             case .uninitializedStructProperty(let name) where !name.isEmpty: return name
             case .varWithDefault(let name) where !name.isEmpty: return name
+            case .possibleConstructorParam(let name) where !name.isEmpty: return name
             default: return nil
             }
         }
         let hasNonBridgableConstructorParams = classDeclaration.unbridgedMembers.contains {
             if case .uninitializedStructProperty(let name) = $0 { return name.isEmpty } else { return false }
         }
-        // All constructor param names available for Swift-side hashing (bridgable Kotlin members + unbridged Swift-only)
-        let allConstructorParamNames = bridgableConstructorParamNames + unbridgedConstructorParamNames
+        // All constructor param names available for Swift-side hashing (bridgable Kotlin members + unbridged Swift-only).
+        // Deduplicate: a property decoded with decodeLevel != .none may appear in both lists
+        // (as a KotlinVariableDeclaration AND an UnbridgedMemberDeclaration).
+        let allConstructorParamNames: [String] = {
+            var seen = Set<String>()
+            var result: [String] = []
+            for name in bridgableConstructorParamNames + unbridgedConstructorParamNames {
+                if seen.insert(name).inserted {
+                    result.append(name)
+                }
+            }
+            return result
+        }()
         let hasConstructorParams = !allConstructorParamNames.isEmpty || hasNonBridgableConstructorParams
         // Phase 1: remember peer for views with ONLY let-with-default properties (no constructor params)
         let canRememberPeer = hasLetWithDefault && !hasConstructorParams
@@ -1627,14 +1639,19 @@ final class KotlinBridgeToKotlinVisitor {
         // Works for both bridged views (unbridged params accessed via Swift_inputsHash on Swift side)
         // and transpiled views (bridgable params as Kotlin members)
         let canRememberPeerWithInputCheck = hasLetWithDefault && !allConstructorParamNames.isEmpty && !hasNonBridgableConstructorParams
+        // Phase 3: peer remembering for views with constructor params but no let-with-default
+        let canRememberPeerNoDefault = !hasLetWithDefault && !allConstructorParamNames.isEmpty && !hasNonBridgableConstructorParams
+        // Body caching sub-condition: only when no @State/@Environment (compile-time).
+        // Runtime allValueTypes check provides additional safety against class-typed params.
+        let canCacheBody = canRememberPeerNoDefault && stateVariables.isEmpty
 
-        if !stateVariables.isEmpty && !(canRememberPeer || canRememberPeerWithInputCheck) {
+        if !stateVariables.isEmpty && !(canRememberPeer || canRememberPeerWithInputCheck || canRememberPeerNoDefault) {
             // Generate Evaluate override for @State-only views (no peer remembering).
             // When peer remembering is active, the Evaluate override is generated below
             // with state sync merged into _ComposeContent instead.
             statements += swiftUIEvaluate(swiftUIType, for: classDeclaration, stateVariables: stateVariables)
         }
-        if canRememberPeer || canRememberPeerWithInputCheck {
+        if canRememberPeer || canRememberPeerWithInputCheck || canRememberPeerNoDefault {
             if canRememberPeer {
                 // Generate Swift_retain external function for rememberViewPeer
                 // (SwiftPeerHandle class is no longer generated here -- it lives in PeerStore.swift)
@@ -1653,7 +1670,7 @@ final class KotlinBridgeToKotlinVisitor {
                     retainBody.append("_ = Swift_peer.retained(as: SwiftValueTypeBox<\(classDeclaration.signature)>.self)")
                 }
                 cdeclFunctions.append(CDeclFunction(name: retainCdecl.cdeclFunctionName, cdecl: retainCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .void, APIFlags(), nil), body: retainBody))
-            } else if canRememberPeerWithInputCheck {
+            } else if canRememberPeerWithInputCheck || canRememberPeerNoDefault {
                 // Phase 2: Generate Swift_inputsHash, Swift_retain, and Swift_refreshPeer externals
                 // (SwiftPeerHandle class is no longer generated here -- it lives in PeerStore.swift)
                 let inputsHashExternal = KotlinRawStatement(sourceCode: "private external fun Swift_inputsHash(Swift_peer: skip.bridge.SwiftObjectPointer): Long")
@@ -1679,7 +1696,19 @@ final class KotlinBridgeToKotlinVisitor {
                 inputsHashBody.append("var hasher = Hasher()")
                 for paramName in allConstructorParamNames {
                     let access = classType == .value ? "peer_swift.value.\(paramName)" : "peer_swift.\(paramName)"
-                    inputsHashBody.append("if !(type(of: \(access)) is AnyClass), let h = \(access) as? AnyHashable { hasher.combine(h) }")
+                    inputsHashBody.append("do {")
+                    inputsHashBody.append("    let val = \(access)")
+                    inputsHashBody.append("    if type(of: val) is AnyClass {")
+                    inputsHashBody.append("        hasher.combine(ObjectIdentifier(val as AnyObject))")
+                    inputsHashBody.append("    } else {")
+                    inputsHashBody.append("        let m = Mirror(reflecting: val)")
+                    inputsHashBody.append("        if m.displayStyle == .optional, let child = m.children.first?.value, type(of: child) is AnyClass {")
+                    inputsHashBody.append("            hasher.combine(ObjectIdentifier(child as AnyObject))")
+                    inputsHashBody.append("        } else if let h = val as? AnyHashable {")
+                    inputsHashBody.append("            hasher.combine(h)")
+                    inputsHashBody.append("        }")
+                    inputsHashBody.append("    }")
+                    inputsHashBody.append("}")
                 }
                 inputsHashBody.append("return Int64(hasher.finalize())")
                 cdeclFunctions.append(CDeclFunction(name: inputsHashCdecl.cdeclFunctionName, cdecl: inputsHashCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .int64, APIFlags(), nil), body: inputsHashBody))
@@ -1729,6 +1758,36 @@ final class KotlinBridgeToKotlinVisitor {
                 let refreshPeerParams = [classType.peerSwiftParameter,
                                          TypeSignature.Parameter(label: "fresh_peer", type: .swiftObjectPointer(kotlin: false))]
                 cdeclFunctions.append(CDeclFunction(name: refreshPeerCdecl.cdeclFunctionName, cdecl: refreshPeerCdecl.cdecl, signature: .function(refreshPeerParams, .void, APIFlags(), nil), body: refreshPeerBody))
+
+                // Phase 3 only: Generate Swift_allParamsValueType external + cdecl for body caching guard
+                if canCacheBody {
+                    let allParamsExternal = KotlinRawStatement(sourceCode: "private external fun Swift_allParamsValueType(Swift_peer: skip.bridge.SwiftObjectPointer): Boolean")
+                    statements.append(allParamsExternal)
+
+                    let allParamsCdecl = CDeclFunction.declaration(for: classDeclaration, isCompanion: false, name: "Swift_allParamsValueType", translator: translator)
+                    var allParamsBody: [String] = []
+                    switch classType {
+                    case .generic:
+                        allParamsBody.append("let peer_swift: \(classDeclaration.signature.typeErasedClass) = Swift_peer.pointee()!")
+                    case .reference:
+                        allParamsBody.append("let peer_swift: \(classDeclaration.signature) = Swift_peer.pointee()!")
+                    default:
+                        allParamsBody.append("let peer_swift: SwiftValueTypeBox<\(classDeclaration.signature)> = Swift_peer.pointee()!")
+                    }
+                    allParamsBody.append("func containsClassRef(_ value: Any) -> Bool {")
+                    allParamsBody.append("    if type(of: value) is AnyClass { return true }")
+                    allParamsBody.append("    for child in Mirror(reflecting: value).children {")
+                    allParamsBody.append("        if containsClassRef(child.value) { return true }")
+                    allParamsBody.append("    }")
+                    allParamsBody.append("    return false")
+                    allParamsBody.append("}")
+                    for paramName in allConstructorParamNames {
+                        let access = classType == .value ? "peer_swift.value.\(paramName)" : "peer_swift.\(paramName)"
+                        allParamsBody.append("if containsClassRef(\(access)) { return false }")
+                    }
+                    allParamsBody.append("return true")
+                    cdeclFunctions.append(CDeclFunction(name: allParamsCdecl.cdeclFunctionName, cdecl: allParamsCdecl.cdecl, signature: .function([classType.peerSwiftParameter], .bool, APIFlags(), nil), body: allParamsBody))
+                }
             }
         }
         for (name, attributes, modifiers) in stateVariables {
@@ -1768,7 +1827,7 @@ final class KotlinBridgeToKotlinVisitor {
         // remember{} runs during the Render phase (inside TagModifier's stable key()
         // scope) rather than the Evaluate phase where key() scopes don't survive
         // structural list mutations (item add/remove).
-        if canRememberPeer || canRememberPeerWithInputCheck {
+        if canRememberPeer || canRememberPeerWithInputCheck || canRememberPeerNoDefault {
             // Evaluate override: return self as Renderable to preserve this view as a
             // node in the render tree. This skips body evaluation during Evaluate —
             // body evaluation happens later in _ComposeContent during Render.
@@ -1829,15 +1888,37 @@ final class KotlinBridgeToKotlinVisitor {
                     composeContentKotlin.append("Swift_syncEnvironment_\(name)(\(classType.peerExternalArgument), envvalue\(name))")
                 }
             }
-            // Replicate View.Evaluate's body evaluation path (observation tracking +
-            // body.Evaluate + render). We can't call super._ComposeContent because that
-            // calls self.Evaluate which returns asRenderable() — causing infinite recursion.
-            composeContentKotlin.append("skip.ui.ViewObservation.startRecording?.invoke()")
-            composeContentKotlin.append("skip.model.StateTracking.pushBody()")
-            composeContentKotlin.append("val renderables = body().Evaluate(context = context, options = 0)")
-            composeContentKotlin.append("skip.model.StateTracking.popBody()")
-            composeContentKotlin.append("skip.ui.ViewObservation.stopAndObserve?.invoke()")
-            composeContentKotlin.append("for (renderable in renderables) { renderable.Render(context = context) }")
+            if canCacheBody {
+                // Phase 3 body caching: when all params are value types, cache the body
+                // result to prevent inline Store/object recreation on recomposition.
+                // The allValueTypes runtime check provides safety against class-typed params.
+                composeContentKotlin.append("val allValueTypes = androidx.compose.runtime.remember(currentHash) { Swift_allParamsValueType(Swift_peer) }")
+                composeContentKotlin.append("if (allValueTypes) {")
+                composeContentKotlin.append("    val cachedBody = androidx.compose.runtime.remember(currentHash) { Swift_composableBody(Swift_peer) }")
+                composeContentKotlin.append("    if (cachedBody != null) {")
+                composeContentKotlin.append("        for (renderable in cachedBody.Evaluate(context = context, options = 0)) {")
+                composeContentKotlin.append("            renderable.Render(context = context)")
+                composeContentKotlin.append("        }")
+                composeContentKotlin.append("    }")
+                composeContentKotlin.append("} else {")
+                composeContentKotlin.append("    skip.ui.ViewObservation.startRecording?.invoke()")
+                composeContentKotlin.append("    skip.model.StateTracking.pushBody()")
+                composeContentKotlin.append("    val renderables = body().Evaluate(context = context, options = 0)")
+                composeContentKotlin.append("    skip.model.StateTracking.popBody()")
+                composeContentKotlin.append("    skip.ui.ViewObservation.stopAndObserve?.invoke()")
+                composeContentKotlin.append("    for (renderable in renderables) { renderable.Render(context = context) }")
+                composeContentKotlin.append("}")
+            } else {
+                // Replicate View.Evaluate's body evaluation path (observation tracking +
+                // body.Evaluate + render). We can't call super._ComposeContent because that
+                // calls self.Evaluate which returns asRenderable() — causing infinite recursion.
+                composeContentKotlin.append("skip.ui.ViewObservation.startRecording?.invoke()")
+                composeContentKotlin.append("skip.model.StateTracking.pushBody()")
+                composeContentKotlin.append("val renderables = body().Evaluate(context = context, options = 0)")
+                composeContentKotlin.append("skip.model.StateTracking.popBody()")
+                composeContentKotlin.append("skip.ui.ViewObservation.stopAndObserve?.invoke()")
+                composeContentKotlin.append("for (renderable in renderables) { renderable.Render(context = context) }")
+            }
             composeContentDecl.body = KotlinCodeBlock(statements: composeContentKotlin.map { KotlinRawStatement(sourceCode: $0) })
             composeContentDecl.parent = classDeclaration
             statements.append(composeContentDecl)

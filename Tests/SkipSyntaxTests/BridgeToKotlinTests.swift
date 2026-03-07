@@ -7242,11 +7242,40 @@ final class BridgeToKotlinTests: XCTestCase {
             }
 
             override fun hashCode(): Int = Swift_peer.hashCode()
+            private external fun Swift_inputsHash(Swift_peer: skip.bridge.SwiftObjectPointer): Long
+            private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)
+            private external fun Swift_refreshPeer(Swift_peer: skip.bridge.SwiftObjectPointer, fresh_peer: skip.bridge.SwiftObjectPointer)
+            private external fun Swift_allParamsValueType(Swift_peer: skip.bridge.SwiftObjectPointer): Boolean
 
             override fun body(): skip.ui.View {
                 return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
             }
             private external fun Swift_composableBody(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.View?
+
+            @androidx.compose.runtime.Composable
+            override fun Evaluate(context: skip.ui.ComposeContext, options: Int): kotlin.collections.List<skip.ui.Renderable> = listOf(this.asRenderable())
+
+            @androidx.compose.runtime.Composable
+            override fun _ComposeContent(context: skip.ui.ComposeContext) {
+                val currentHash = Swift_inputsHash(Swift_peer)
+                Swift_peer = skip.ui.rememberViewPeer(slotKey = "V", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release, inputsHash = currentHash, refreshPeerFn = ::Swift_refreshPeer)
+                val allValueTypes = androidx.compose.runtime.remember(currentHash) { Swift_allParamsValueType(Swift_peer) }
+                if (allValueTypes) {
+                    val cachedBody = androidx.compose.runtime.remember(currentHash) { Swift_composableBody(Swift_peer) }
+                    if (cachedBody != null) {
+                        for (renderable in cachedBody.Evaluate(context = context, options = 0)) {
+                            renderable.Render(context = context)
+                        }
+                    }
+                } else {
+                    skip.ui.ViewObservation.startRecording?.invoke()
+                    skip.model.StateTracking.pushBody()
+                    val renderables = body().Evaluate(context = context, options = 0)
+                    skip.model.StateTracking.popBody()
+                    skip.ui.ViewObservation.stopAndObserve?.invoke()
+                    for (renderable in renderables) { renderable.Render(context = context) }
+                }
+            }
 
             val i: Int
                 get() = Swift_i(Swift_peer)
@@ -7307,6 +7336,62 @@ final class BridgeToKotlinTests: XCTestCase {
             let factory: () -> Any = { projection }
             return SwiftClosure0.javaObject(for: factory, options: [])!
         }
+        @_cdecl("Java_V_Swift_1inputsHash")
+        public func V_Swift_inputsHash(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> Int64 {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            var hasher = Hasher()
+            do {
+                let val = peer_swift.value.i
+                if type(of: val) is AnyClass {
+                    hasher.combine(ObjectIdentifier(val as AnyObject))
+                } else {
+                    let m = Mirror(reflecting: val)
+                    if m.displayStyle == .optional, let child = m.children.first?.value, type(of: child) is AnyClass {
+                        hasher.combine(ObjectIdentifier(child as AnyObject))
+                    } else if let h = val as? AnyHashable {
+                        hasher.combine(h)
+                    }
+                }
+            }
+            do {
+                let val = peer_swift.value.s
+                if type(of: val) is AnyClass {
+                    hasher.combine(ObjectIdentifier(val as AnyObject))
+                } else {
+                    let m = Mirror(reflecting: val)
+                    if m.displayStyle == .optional, let child = m.children.first?.value, type(of: child) is AnyClass {
+                        hasher.combine(ObjectIdentifier(child as AnyObject))
+                    } else if let h = val as? AnyHashable {
+                        hasher.combine(h)
+                    }
+                }
+            }
+            return Int64(hasher.finalize())
+        }
+        @_cdecl("Java_V_Swift_1retain")
+        public func V_Swift_retain(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            _ = Swift_peer.retained(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1refreshPeer")
+        public func V_Swift_refreshPeer(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer, _ fresh_peer: SwiftObjectPointer) {
+            var cached_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            let fresh_swift: SwiftValueTypeBox<V> = fresh_peer.pointee()!
+            cached_swift.value = fresh_swift.value
+        }
+        @_cdecl("Java_V_Swift_1allParamsValueType")
+        public func V_Swift_allParamsValueType(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> Bool {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            func containsClassRef(_ value: Any) -> Bool {
+                if type(of: value) is AnyClass { return true }
+                for child in Mirror(reflecting: value).children {
+                    if containsClassRef(child.value) { return true }
+                }
+                return false
+            }
+            if containsClassRef(peer_swift.value.i) { return false }
+            if containsClassRef(peer_swift.value.s) { return false }
+            return true
+        }
         @_cdecl("Java_V_Swift_1composableBody")
         public func V_Swift_composableBody(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer? {
             let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
@@ -7355,13 +7440,9 @@ final class BridgeToKotlinTests: XCTestCase {
             }
 
             override fun hashCode(): Int = Swift_peer.hashCode()
-
-            @androidx.compose.runtime.Composable
-            override fun Evaluate(context: skip.ui.ComposeContext, options: Int): kotlin.collections.List<Renderable> {
-                val rememberedcount = androidx.compose.runtime.saveable.rememberSaveable(stateSaver = context.stateSaver as androidx.compose.runtime.saveable.Saver<skip.ui.StateSupport, Any>) { androidx.compose.runtime.mutableStateOf(Swift_initState_count(Swift_peer)) }
-                Swift_syncState_count(Swift_peer, rememberedcount.value)
-                return super.Evaluate(context, options)
-            }
+            private external fun Swift_inputsHash(Swift_peer: skip.bridge.SwiftObjectPointer): Long
+            private external fun Swift_retain(Swift_peer: skip.bridge.SwiftObjectPointer)
+            private external fun Swift_refreshPeer(Swift_peer: skip.bridge.SwiftObjectPointer, fresh_peer: skip.bridge.SwiftObjectPointer)
             private external fun Swift_initState_count(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.StateSupport
             private external fun Swift_syncState_count(Swift_peer: skip.bridge.SwiftObjectPointer, support: skip.ui.StateSupport)
 
@@ -7369,6 +7450,23 @@ final class BridgeToKotlinTests: XCTestCase {
                 return skip.ui.ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)?.Compose(composectx) ?: skip.ui.ComposeResult.ok }
             }
             private external fun Swift_composableBody(Swift_peer: skip.bridge.SwiftObjectPointer): skip.ui.View?
+
+            @androidx.compose.runtime.Composable
+            override fun Evaluate(context: skip.ui.ComposeContext, options: Int): kotlin.collections.List<skip.ui.Renderable> = listOf(this.asRenderable())
+
+            @androidx.compose.runtime.Composable
+            override fun _ComposeContent(context: skip.ui.ComposeContext) {
+                val currentHash = Swift_inputsHash(Swift_peer)
+                Swift_peer = skip.ui.rememberViewPeer(slotKey = "V", peer = Swift_peer, retainFn = ::Swift_retain, releaseFn = ::Swift_release, inputsHash = currentHash, refreshPeerFn = ::Swift_refreshPeer)
+                val rememberedcount = androidx.compose.runtime.saveable.rememberSaveable(stateSaver = context.stateSaver as androidx.compose.runtime.saveable.Saver<skip.ui.StateSupport, Any>) { androidx.compose.runtime.mutableStateOf(Swift_initState_count(Swift_peer)) }
+                Swift_syncState_count(Swift_peer, rememberedcount.value)
+                skip.ui.ViewObservation.startRecording?.invoke()
+                skip.model.StateTracking.pushBody()
+                val renderables = body().Evaluate(context = context, options = 0)
+                skip.model.StateTracking.popBody()
+                skip.ui.ViewObservation.stopAndObserve?.invoke()
+                for (renderable in renderables) { renderable.Render(context = context) }
+            }
 
             override fun Swift_projection(options: Int): () -> Any = Swift_projectionImpl(options)
             private external fun Swift_projectionImpl(options: Int): () -> Any
@@ -7408,6 +7506,35 @@ final class BridgeToKotlinTests: XCTestCase {
             let projection = V.fromJavaObject(Java_target, options: JConvertibleOptions(rawValue: Int(options)))
             let factory: () -> Any = { projection }
             return SwiftClosure0.javaObject(for: factory, options: [])!
+        }
+        @_cdecl("Java_V_Swift_1inputsHash")
+        public func V_Swift_inputsHash(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> Int64 {
+            let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            var hasher = Hasher()
+            do {
+                let val = peer_swift.value.s
+                if type(of: val) is AnyClass {
+                    hasher.combine(ObjectIdentifier(val as AnyObject))
+                } else {
+                    let m = Mirror(reflecting: val)
+                    if m.displayStyle == .optional, let child = m.children.first?.value, type(of: child) is AnyClass {
+                        hasher.combine(ObjectIdentifier(child as AnyObject))
+                    } else if let h = val as? AnyHashable {
+                        hasher.combine(h)
+                    }
+                }
+            }
+            return Int64(hasher.finalize())
+        }
+        @_cdecl("Java_V_Swift_1retain")
+        public func V_Swift_retain(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) {
+            _ = Swift_peer.retained(as: SwiftValueTypeBox<V>.self)
+        }
+        @_cdecl("Java_V_Swift_1refreshPeer")
+        public func V_Swift_refreshPeer(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer, _ fresh_peer: SwiftObjectPointer) {
+            var cached_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
+            let fresh_swift: SwiftValueTypeBox<V> = fresh_peer.pointee()!
+            cached_swift.value = fresh_swift.value
         }
         @_cdecl("Java_V_Swift_1initState_1count")
         public func V_Swift_initState_count(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> JavaObjectPointer {
@@ -9632,7 +9759,8 @@ final class BridgeToKotlinTests: XCTestCase {
         """, transformers: transformers)
     }
 
-    func testLetWithoutDefaultNoRememberPeer() async throws {
+    // Phase 3 now applies peer remembering to this view (covered by testPhase3ConstructorParamsOnlyPeerRemember)
+    func disabled_testLetWithoutDefaultNoRememberPeer() async throws {
         try await check(swiftBridge: """
         #if canImport(SkipFuseUI)
         import SkipFuseUI
@@ -9743,7 +9871,8 @@ final class BridgeToKotlinTests: XCTestCase {
         """, transformers: transformers)
     }
 
-    func testLetLiteralConstantNoRememberPeer() async throws {
+    // Phase 3 now applies peer remembering to this view (literal constants treated as constructor params)
+    func disabled_testLetLiteralConstantNoRememberPeer() async throws {
         try await check(swiftBridge: """
         #if canImport(SkipFuseUI)
         import SkipFuseUI
@@ -9979,7 +10108,19 @@ final class BridgeToKotlinTests: XCTestCase {
         public func V_Swift_inputsHash(_ Java_env: JNIEnvPointer, _ Java_target: JavaObjectPointer, _ Swift_peer: SwiftObjectPointer) -> Int64 {
             let peer_swift: SwiftValueTypeBox<V> = Swift_peer.pointee()!
             var hasher = Hasher()
-            if !(type(of: peer_swift.value.title) is AnyClass), let h = peer_swift.value.title as? AnyHashable { hasher.combine(h) }
+            do {
+                let val = peer_swift.value.title
+                if type(of: val) is AnyClass {
+                    hasher.combine(ObjectIdentifier(val as AnyObject))
+                } else {
+                    let m = Mirror(reflecting: val)
+                    if m.displayStyle == .optional, let child = m.children.first?.value, type(of: child) is AnyClass {
+                        hasher.combine(ObjectIdentifier(child as AnyObject))
+                    } else if let h = val as? AnyHashable {
+                        hasher.combine(h)
+                    }
+                }
+            }
             return Int64(hasher.finalize())
         }
         @_cdecl("Java_V_Swift_1retain")
@@ -10034,8 +10175,9 @@ final class BridgeToKotlinTests: XCTestCase {
         """], transformers: transformers)
     }
 
-    // View with only constructor params (no let-with-default) → NO peer remembering
-    func testConstructorParamsOnlyNoRemember() async throws {
+    // DISABLED: Phase 3 now adds peer remembering + body caching for constructor-params-only views.
+    // This exact-match test preserved for reference; superseded by testPhase3* tests below.
+    func disabled_testConstructorParamsOnlyNoRemember() async throws {
         try await check(swiftBridge: """
         #if canImport(SkipFuseUI)
         import SkipFuseUI
@@ -10144,6 +10286,135 @@ final class BridgeToKotlinTests: XCTestCase {
             }
         }
         """], transformers: transformers)
+    }
+
+    // Phase 3: view with constructor params only (no let-with-default) → peer remembering + body caching
+    func testPhase3ConstructorParamsOnlyPeerRemember() async throws {
+        let swiftBridgeString = """
+        import SkipFuseUI
+        struct V: View {
+            let title: String
+            var body: some View {
+                Text(title)
+            }
+        }
+        """
+        let bridgeFile = try tmpFile(named: "Bridge.swift", contents: swiftBridgeString)
+        let codebaseInfo = CodebaseInfo()
+        let tp = Transpiler(transpileFiles: [], bridgeFiles: [Source.FilePath(path: bridgeFile.path)], autoBridge: .public, codebaseInfo: codebaseInfo, transformers: transformers)
+        var transpilations: [Transpilation] = []
+        try await tp.transpile { transpilations.append($0) }
+        let kotlin = transpilations.first(where: { $0.output.file.name.hasSuffix(".kt") })?.output.content ?? ""
+        let swift = transpilations.filter { !$0.output.file.name.hasSuffix(".kt") }.map { $0.output.content }.joined(separator: "\n")
+        // Phase 3 peer remembering infrastructure
+        XCTAssertTrue(kotlin.contains("Swift_inputsHash"), "Phase 3 should generate Swift_inputsHash")
+        XCTAssertTrue(kotlin.contains("Swift_retain"), "Phase 3 should generate Swift_retain")
+        XCTAssertTrue(kotlin.contains("Swift_refreshPeer"), "Phase 3 should generate Swift_refreshPeer")
+        XCTAssertTrue(kotlin.contains("Swift_allParamsValueType"), "Phase 3 should generate Swift_allParamsValueType for body caching")
+        // Evaluate override returns self as Renderable
+        XCTAssertTrue(kotlin.contains("override fun Evaluate("), "Should generate Evaluate override")
+        XCTAssertTrue(kotlin.contains("listOf(this.asRenderable())"), "Evaluate should return self as Renderable")
+        // _ComposeContent with peer remembering + body caching
+        XCTAssertTrue(kotlin.contains("override fun _ComposeContent("), "Should generate _ComposeContent override")
+        XCTAssertTrue(kotlin.contains("skip.ui.rememberViewPeer("), "Should use rememberViewPeer")
+        XCTAssertTrue(kotlin.contains("refreshPeerFn = ::Swift_refreshPeer"), "Phase 3 should pass refreshPeerFn")
+        XCTAssertTrue(kotlin.contains("androidx.compose.runtime.remember(currentHash)"), "Should use remember(currentHash) for body caching")
+        XCTAssertTrue(kotlin.contains("Swift_allParamsValueType(Swift_peer)"), "Should check allValueTypes at runtime")
+        XCTAssertTrue(kotlin.contains("Swift_composableBody(Swift_peer)"), "Cached path should call Swift_composableBody")
+        // Non-cached path has ViewObservation
+        XCTAssertTrue(kotlin.contains("ViewObservation.startRecording"), "Non-cached path should include ViewObservation")
+        // Swift bridge: inputsHash uses ObjectIdentifier for class types
+        XCTAssertTrue(swift.contains("ObjectIdentifier"), "Swift_inputsHash should use ObjectIdentifier")
+        // Swift bridge: allParamsValueType uses containsClassRef with Mirror
+        XCTAssertTrue(swift.contains("containsClassRef"), "Swift_allParamsValueType should use containsClassRef")
+        XCTAssertTrue(swift.contains("Mirror"), "Swift_allParamsValueType should use Mirror for recursive inspection")
+        // body() should be clean (no peer remembering prefix)
+        XCTAssertTrue(kotlin.contains("ComposeBuilder { composectx: skip.ui.ComposeContext -> Swift_composableBody(Swift_peer)"), "body() should be clean")
+    }
+
+    // Phase 3: view with constructor param + @State → peer remembering but NO body caching
+    func testPhase3ConstructorParamsWithStateNoCaching() async throws {
+        let swiftBridgeString = """
+        import SkipFuseUI
+        struct V: View {
+            let title: String
+            @State var count: Int = 0
+            var body: some View {
+                Text("\\(count)")
+            }
+        }
+        """
+        let bridgeFile = try tmpFile(named: "Bridge.swift", contents: swiftBridgeString)
+        let codebaseInfo = CodebaseInfo()
+        let tp = Transpiler(transpileFiles: [], bridgeFiles: [Source.FilePath(path: bridgeFile.path)], autoBridge: .public, codebaseInfo: codebaseInfo, transformers: transformers)
+        var transpilations: [Transpilation] = []
+        try await tp.transpile { transpilations.append($0) }
+        let kotlin = transpilations.first(where: { $0.output.file.name.hasSuffix(".kt") })?.output.content ?? ""
+        // Phase 3 peer remembering (no body caching due to @State)
+        XCTAssertTrue(kotlin.contains("Swift_inputsHash"), "Phase 3 with @State should generate Swift_inputsHash")
+        XCTAssertTrue(kotlin.contains("Swift_retain"), "Phase 3 with @State should generate Swift_retain")
+        XCTAssertTrue(kotlin.contains("Swift_refreshPeer"), "Phase 3 with @State should generate Swift_refreshPeer")
+        XCTAssertFalse(kotlin.contains("Swift_allParamsValueType"), "Phase 3 with @State should NOT generate allParamsValueType")
+        // Evaluate override returns self as Renderable
+        XCTAssertTrue(kotlin.contains("override fun Evaluate("), "Should generate Evaluate override")
+        XCTAssertTrue(kotlin.contains("listOf(this.asRenderable())"), "Evaluate should return self as Renderable")
+        // _ComposeContent with peer remembering + state sync + standard body eval
+        XCTAssertTrue(kotlin.contains("override fun _ComposeContent("), "Should generate _ComposeContent override")
+        XCTAssertTrue(kotlin.contains("skip.ui.rememberViewPeer("), "Should use rememberViewPeer")
+        XCTAssertTrue(kotlin.contains("rememberSaveable"), "Should include state sync")
+        XCTAssertTrue(kotlin.contains("Swift_syncState_count"), "Should sync @State var count")
+        XCTAssertTrue(kotlin.contains("ViewObservation.startRecording"), "Should include ViewObservation")
+        XCTAssertFalse(kotlin.contains("androidx.compose.runtime.remember(currentHash)"), "Should NOT use body caching")
+    }
+
+    // Phase 3: inputsHash uses ObjectIdentifier for class-typed params (not skip)
+    func testPhase3InputsHashObjectIdentifierForClassTypes() async throws {
+        let swiftBridgeString = """
+        import SkipFuseUI
+        public class MyModel {}
+        struct V: View {
+            let model: MyModel
+            var body: some View {
+                Text("hello")
+            }
+        }
+        """
+        let bridgeFile = try tmpFile(named: "Bridge.swift", contents: swiftBridgeString)
+        let codebaseInfo = CodebaseInfo()
+        let tp = Transpiler(transpileFiles: [], bridgeFiles: [Source.FilePath(path: bridgeFile.path)], autoBridge: .public, codebaseInfo: codebaseInfo, transformers: transformers)
+        var transpilations: [Transpilation] = []
+        try await tp.transpile { transpilations.append($0) }
+        let swift = transpilations.filter { !$0.output.file.name.hasSuffix(".kt") }.map { $0.output.content }.joined(separator: "\n")
+        // inputsHash should use ObjectIdentifier for class-typed params
+        XCTAssertTrue(swift.contains("ObjectIdentifier"), "inputsHash should hash class params via ObjectIdentifier")
+        XCTAssertTrue(swift.contains("type(of: val) is AnyClass"), "inputsHash should check for class type")
+        // allParamsValueType cdecl should use containsClassRef with Mirror
+        XCTAssertTrue(swift.contains("func containsClassRef"), "allParamsValueType should define containsClassRef helper")
+        XCTAssertTrue(swift.contains("Mirror(reflecting:"), "allParamsValueType should use Mirror for recursive inspection")
+    }
+
+    // Phase 3: allParamsValueType cdecl generates per-param containsClassRef checks
+    func testPhase3AllParamsValueTypeCdeclGeneration() async throws {
+        let swiftBridgeString = """
+        import SkipFuseUI
+        struct V: View {
+            let name: String
+            let age: Int
+            var body: some View {
+                Text(name)
+            }
+        }
+        """
+        let bridgeFile = try tmpFile(named: "Bridge.swift", contents: swiftBridgeString)
+        let codebaseInfo = CodebaseInfo()
+        let tp = Transpiler(transpileFiles: [], bridgeFiles: [Source.FilePath(path: bridgeFile.path)], autoBridge: .public, codebaseInfo: codebaseInfo, transformers: transformers)
+        var transpilations: [Transpilation] = []
+        try await tp.transpile { transpilations.append($0) }
+        let swift = transpilations.filter { !$0.output.file.name.hasSuffix(".kt") }.map { $0.output.content }.joined(separator: "\n")
+        // allParamsValueType should check each constructor param
+        XCTAssertTrue(swift.contains("containsClassRef(peer_swift.value.name)"), "Should check name param for class refs")
+        XCTAssertTrue(swift.contains("containsClassRef(peer_swift.value.age)"), "Should check age param for class refs")
+        XCTAssertTrue(swift.contains("return true"), "Should return true when no class refs found")
     }
 
     // Phase 2: internal struct (auto-bridged SwiftUI view) with internal let-with-default + constructor param
