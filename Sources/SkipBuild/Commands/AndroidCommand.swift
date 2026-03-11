@@ -26,10 +26,266 @@ struct AndroidCommand: AsyncParsableCommand {
             AndroidBuildCommand.self,
             AndroidRunCommand.self,
             AndroidTestCommand.self,
+            AndroidHomeCommand.self,
             AndroidSDKCommand.self,
             AndroidEmulatorCommand.self,
             AndroidToolchainCommand.self,
         ])
+}
+
+@available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
+struct AndroidHomeCommand: AsyncParsableCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "home",
+        abstract: "Install and manage the Android SDK in ANDROID_HOME",
+        shouldDisplay: androidCommandEnabled,
+        subcommands: [
+            AndroidHomeInstallCommand.self,
+        ])
+}
+
+@available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
+struct AndroidHomeInstallCommand: MessageCommand, ToolOptionsCommand {
+    static var configuration = CommandConfiguration(
+        commandName: "install",
+        abstract: "Install Android SDK Command-line Tools, platform-tools, and emulator in ANDROID_HOME",
+        discussion: """
+        This command sets up the Android SDK in your ANDROID_HOME directory:
+        1. Creates the ANDROID_HOME directory if it doesn't exist
+        2. Installs cmdline-tools (if not present) using the bootstrap sdkmanager
+        3. Uses the installed sdkmanager to install platform-tools and emulator
+        
+        Run with the --verbose argument to observe the exact commands that it executes.
+        """,
+        shouldDisplay: true)
+
+    @OptionGroup(title: "Output Options")
+    var outputOptions: OutputOptions
+
+    @OptionGroup(title: "Tool Options")
+    var toolOptions: ToolOptions
+
+    func performCommand(with out: MessageQueue) async throws {
+        let _ = try await ensureCmdlineTools(
+            command: self,
+            out: out
+        )
+    }
+}
+
+// MARK: - cmdline-tools Validation
+
+/// Error thrown when Java cannot be found
+struct JavaNotFoundError: LocalizedError {
+    let javaHome: String?
+
+    init(javaHome: String? = nil) {
+        self.javaHome = javaHome
+    }
+
+    var errorDescription: String? {
+        if let javaHome {
+            return "Java not found in JAVA_HOME: \(javaHome). run: brew install openjdk"
+        } else {
+            return "Java not found. run: brew install openjdk"
+        }
+    }
+}
+
+/// Error thrown when cmdline-tools cannot be found
+struct CmdlineToolsNotFoundError: LocalizedError {
+    var errorDescription: String? {
+        "Android SDK Command-line Tools not found. Install with: brew install android-commandlinetools"
+    }
+}
+
+/// Error thrown when cmdline-tools bootstrap installation fails
+struct CmdlineToolsBootstrapFailedError: LocalizedError {
+    var errorDescription: String? {
+        "Failed to install the Android SDK Command-line Tools in your ANDROID_HOME. This appears to be a bug in Skip. Try using Android Studio to install the Command-line Tools."
+    }
+}
+
+/// Result of cmdline-tools validation
+struct CmdlineToolsResult {
+    let sdkmanagerPath: String
+    let version: String
+    let wasBootstrapped: Bool
+}
+
+/// Error thrown when sdkmanager version is too old
+struct OutdatedSdkmanagerError: LocalizedError {
+    let version: String
+    let minimumVersion: String
+
+    var errorDescription: String? {
+        "Android SDK Command-line Tools version \(version) is too old. Minimum required version is \(minimumVersion)."
+    }
+}
+
+/// Checks sdkmanager version and validates it meets the minimum requirement
+/// - Parameters:
+///   - command: The message command to use for executing sdkmanager
+///   - sdkmanagerPath: Path to the sdkmanager binary
+///   - minimumVersion: Minimum required version string
+///   - out: MessageQueue to yield validation messages
+/// - Returns: The version string if it meets the minimum requirement
+/// - Throws: OutdatedSdkmanagerError if version is too old, or other errors if command fails
+private func checkSdkmanagerVersion(
+    command: some MessageCommand,
+    sdkmanagerPath: String,
+    minimumVersion: String,
+    out: MessageQueue
+) async throws -> String {
+    let result = try await command.run(
+        with: out,
+        "Check sdkmanager version",
+        [sdkmanagerPath, "--version"]
+    )
+    let output = try result.get()
+    let version = output.stdout.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+
+    // Check if version meets minimum requirement using semantic version comparison
+    if version.localizedStandardCompare(minimumVersion) == .orderedAscending {
+        await out.write(status: .fail, "Android command-line tools version \(version) is too old (minimum: \(minimumVersion))")
+        throw OutdatedSdkmanagerError(version: version, minimumVersion: minimumVersion)
+    }
+
+    await out.write(status: .pass, "Android command-line tools version \(version) (> \(minimumVersion))")
+    return version
+}
+
+/// Error thrown when emulator binary cannot be found
+struct EmulatorNotFoundError: LocalizedError {
+    let androidHome: String
+
+    var errorDescription: String? {
+        "Android Emulator not found at \(androidHome)/emulator/emulator. This appears to be a bug in Skip. Try installing the emulator with: \(androidHome)/cmdline-tools/latest/bin/sdkmanager emulator"
+    }
+}
+
+struct DefaultAndroidHomeUnknownError: LocalizedError {
+    var errorDescription: String? {
+        "You have not set an ANDROID_HOME environment variable, and you're not using macOS, Windows, or Linux. Set ANDROID_HOME to your Android SDK path."
+    }
+}
+
+/// Ensures Android SDK is fully set up in ANDROID_HOME, including cmdline-tools, platform-tools, and emulator.
+/// Bootstraps cmdline-tools if necessary, creates ANDROID_HOME if needed, and installs required SDK components.
+/// - Parameters:
+///   - command: The message command to use for executing sdkmanager
+///   - out: MessageQueue to yield validation messages
+/// - Returns: CmdlineToolsResult containing sdkmanager path and version
+/// - Throws: JavaNotFoundError if Java is not found, DefaultAndroidHomeUnknownError if ANDROID_HOME cannot be determined,
+///           CmdlineToolsNotFoundError if no sdkmanager can be found, or CmdlineToolsBootstrapFailedError if installation fails
+///
+/// Note: For testing, set `ProcessInfo.mockEnvironment` before calling this function.
+@available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
+func ensureCmdlineTools(
+    command: some MessageCommand & ToolOptionsCommand,
+    additionalComponents: [String] = [],
+    out: MessageQueue
+) async throws -> CmdlineToolsResult {
+    let fm = FileManager.default
+    let minimumVersion = "12.0"
+
+    // Step 1: Validate JAVA_HOME
+    guard let javaHome = ProcessInfo.javaHome else {
+        throw JavaNotFoundError()
+    }
+    guard fm.fileExists(atPath: javaHome) else {
+        throw JavaNotFoundError(javaHome: javaHome)
+    }
+    await out.write(status: .pass, "JAVA_HOME = \(javaHome)")
+
+    // Step 2: Get/validate ANDROID_HOME
+    guard let androidHome = ProcessInfo.androidHome else {
+        throw DefaultAndroidHomeUnknownError()
+    }
+
+    if fm.fileExists(atPath: androidHome) {
+        await out.write(status: .pass, "ANDROID_HOME = \(androidHome)")
+    } else {
+        // Create the ANDROID_HOME directory
+        try fm.createDirectory(atPath: androidHome, withIntermediateDirectories: true)
+        await out.write(status: .pass, "Created ANDROID_HOME at \(androidHome)")
+    }
+
+    let cmdlineToolsPath = "\(androidHome)/cmdline-tools/latest/bin/sdkmanager"
+    let isBootstrapping = !fm.isExecutableFile(atPath: cmdlineToolsPath)
+    if isBootstrapping {
+        let bootstrap: String
+        do {
+            bootstrap = try command.findToolPath(for: "sdkmanager")
+        } catch {
+            throw CmdlineToolsNotFoundError()
+        }
+
+        // Verify the bootstrap sdkmanager actually exists and is executable
+        guard FileManager.default.isExecutableFile(atPath: bootstrap) else {
+            throw CmdlineToolsNotFoundError()
+        }
+
+        await out.write(status: .pass, "Bootstrap SDK Manager = \(bootstrap)")
+
+        try await installSDKComponents(
+            command: command,
+            components: ["cmdline-tools;latest"],
+            out: out
+        )
+
+        if !fm.isExecutableFile(atPath: cmdlineToolsPath) {
+            throw CmdlineToolsBootstrapFailedError()
+        }
+    }
+
+    let version = try await checkSdkmanagerVersion(
+        command: command,
+        sdkmanagerPath: cmdlineToolsPath,
+        minimumVersion: minimumVersion,
+        out: out
+    )
+
+    try await installSDKComponents(
+        command: command,
+        components: ["platform-tools", "emulator"] + additionalComponents,
+        out: out
+    )
+
+    let emulatorPath = "\(androidHome)/emulator/emulator"
+    guard fm.isExecutableFile(atPath: emulatorPath) else {
+        throw EmulatorNotFoundError(androidHome: androidHome)
+    }
+    await out.write(status: .pass, "Android Emulator: \(emulatorPath)")
+
+    return CmdlineToolsResult(
+        sdkmanagerPath: cmdlineToolsPath,
+        version: version,
+        wasBootstrapped: isBootstrapping
+    )
+}
+
+/// Helper function to install platform-tools and emulator using the installed sdkmanager
+func installSDKComponents(
+    command: some MessageCommand & ToolOptionsCommand,
+    components: [String],
+    out: MessageQueue
+) async throws {
+    guard let androidHome = ProcessInfo.androidHome else {
+        throw DefaultAndroidHomeUnknownError()
+    }
+
+    let sdkmanager = try command.toolOptions.toolPath(for: "sdkmanager")
+
+    await command.withLogStream(title: "Install Android SDK components", with: out) {
+        try await command.run(with: out, "Configure Android SDK Manager", ["sh", "-c", "yes | \(sdkmanager) --sdk_root=\(androidHome) --licenses"])
+
+        for component in components {
+            _ = try await command.runTool("sdkmanager", with: out, "Install \(component)", arguments: ["--verbose", "--install", "--sdk_root=\(androidHome)", component])
+        }
+
+        await out.write(status: .pass, "Android SDK setup complete in \(androidHome)")
+    }
 }
 
 @available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
@@ -296,8 +552,8 @@ protocol AndroidOperationCommand : MessageCommand, ToolchainOptionsCommand {
     var args: [String] { get }
 }
 
-fileprivate extension AndroidOperationCommand {
-    private func runCommand(command: [String], env: [String: String], with out: MessageQueue) async throws {
+extension AndroidOperationCommand {
+    func runCommand(command: [String], env: [String: String], with out: MessageQueue) async throws {
         #if !canImport(SkipDriveExternal)
         throw ToolLaunchError(errorDescription: "Cannot launch android command without SkipDriveExternal")
         #else
@@ -341,6 +597,187 @@ fileprivate extension AndroidOperationCommand {
         #endif
     }
 
+    func runToolchainCommand(_ tc: ToolchainPaths, executable: String?, testMode: TestingMode?, with out: MessageQueue) async throws -> (cmd: [String], env: [String: String]) {
+        var env: [String: String] = ProcessInfo.processInfo.environmentWithDefaultToolPaths
+        let toolchainLib = tc.toolchainPath.appendingPathComponent("usr/lib", isDirectory: true)
+        let toolchainBin = tc.toolchainPath.appendingPathComponent("usr/bin", isDirectory: true)
+        let swiftCmd = toolchainBin.appendingPathComponent("swift", isDirectory: false).path
+
+        // when some older version of ld is earlier in the path, a user reported an error like "ld: unsupported tapi file type '!tapi-tbd' in YAML file" when trying to build; this should in theory avoid that, but there was an error where "/Users/USERNAME/anaconda3/bin/ld" was earlier in the PATH; prepending "/usr/bin/ld" to the PATH should be enough to work around this
+        let path = toolchainBin.path + ":/usr/bin:" + (env["PATH"] ?? "")
+        env["PATH"] = path
+        // when Xcode invokes gradle which invokes `skip android build` which invokes `swift build`,
+        // the inherited SDKROOT will be something like "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.0.sdk",
+        // which will break the build.
+        // So we manually clear the SDKROOT environment variable in case it is set.
+        env["SDKROOT"] = nil
+
+        // Clear ANDROID_NDK_ROOT to work around Android cross-compilation build failures
+        // https://github.com/finagolfin/swift-android-sdk/issues/207
+        env["ANDROID_NDK_ROOT"] = nil
+
+        // We also need to clear out any environment variables that may change between runs (like LLBUILD_BUILD_ID='4288622949' LLBUILD_LANE_ID='9' LLBUILD_TASK_ID='31650009000f'), since those will prevent incremental builds from happening and force a complete rebuild each time
+        if env["XCODE_VERSION_MAJOR"] != nil {
+            let permittedEnvironment: Set<String> = [
+                "PATH", "HOME", "HOMEBREW_PREFIX", "JAVA_HOME", "LANG", "LOGNAME", "PWD", "SHELL", "SWIFTLY_BIN_DIR", "SWIFTLY_HOME_DIR", "TMPDIR", "USER"
+            ]
+            env = env.filter({ (key, value) in
+                permittedEnvironment.contains(key)
+                || key.hasPrefix("SKIP_") // "SKIP_COMMAND_OVERRIDE"
+                || key.hasPrefix("ANDROID_") // "ANDROID_HOME", "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK", "ANDROID_SERIAL"
+            })
+        }
+
+        if !FileManager.default.fileExists(atPath: swiftCmd) {
+            throw CrossCompilerError(errorDescription: "Could not locate swift command at: \(swiftCmd)")
+        }
+        var cmd: [String] = []
+        var xswiftc = toolchainOptions.xswiftc
+        var xcc = toolchainOptions.xcc
+        var xlinker = toolchainOptions.xlinker
+
+        cmd += [swiftCmd]
+        cmd += ["build"]
+
+        if let destinationURL = tc.destinationURL {
+            cmd += ["--destination", destinationURL.path]
+        } else if let sdkName = tc.sdkName {
+            cmd += ["--swift-sdk", sdkName]
+        }
+
+        if testMode != nil {
+            cmd += ["--build-tests"]
+            // plugin-path is a workaround for https://github.com/swiftlang/swift-package-manager/issues/8362
+            xswiftc += ["-plugin-path", toolchainLib.appendingPathComponent("swift/host/plugins/testing", isDirectory: true).path]
+        }
+        // pass-through the "--verbose" flag to the underlying build command
+        if outputOptions.verbose {
+            cmd += ["--verbose"]
+        }
+        // pass-through the "--package-path" flag to the underlying build command
+        if let packagePath = toolchainOptions.packagePath {
+            cmd += ["--package-path", packagePath]
+        }
+        // pass-through the "--scratch-path" flag to the underlying build command
+        if let scratchPath = toolchainOptions.scratchPath {
+            cmd += ["--scratch-path", scratchPath]
+        }
+        // pass-through the "--configuration" flag to the underlying build command
+        if let configuration = toolchainOptions.configuration {
+            cmd += ["--configuration", configuration.rawValue]
+        }
+
+        if toolchainOptions.bridge {
+            xswiftc += ["-DSKIP_BRIDGE"]
+            // set the SKIP_BRIDGE flag, which is transferred through to a build #define in SkipBridge and can be used to check whether the current build mode is targetting JNI
+            env["SKIP_BRIDGE"] = "1"
+        }
+
+        if toolchainOptions.aggregate {
+            cmd += ["--static-swift-stdlib"]
+            xswiftc += ["-L" + tc.libPathStatic.path]
+            xswiftc += ["-lc++_shared"]
+            xswiftc += ["-llog"]
+            xswiftc += ["-Osize"]
+
+            // enables dead stripping of unused runtime functions: swiftc -Xcc -ffunction-sections -Xcc -fdata-sections -Xcc -mthumb -Xlinker --gc-sections -Xfrontend -metadata-sections -Xfrontend -function-sections -Xfrontend -data-sections -static-stdlib -target -lswiftCore -lswiftStdlibStubsBaremetal -lstdc++_nano -lc -lg -lm -lgcc -Xlinker -T -Xlinker ./linker.ld imp.o unicode.o test.swift
+            xswiftc += ["-Xfrontend", "-function-sections"]
+            //xswiftc += ["-Xfrontend", "-data-sections"]
+            //xswiftc += ["-Xfrontend", "-metadata-sections"]
+            xcc += ["-ffunction-sections"]
+            xcc += ["-fdata-sections"]
+            xcc += ["-fvisibility=hidden"]
+            xcc += ["-fmerge-all-constants"]
+
+            // garbage collect unused sections
+            xlinker += ["--gc-sections"]
+            //xlinker += ["--print-gc-sections"] // debug removed sections
+            //xlinker += ["--strip-debug"]
+
+            // create a linker version script that excludes all global symbols other than the JNI-exported functions
+            let versionScript = """
+                {
+                  global:
+                    Java_*;
+                    JNI_*;
+                  local:
+                    *;
+                };
+
+                """
+
+            let scratch = try toolchainOptions.scratchPath ?? createTempDir().path
+            let versionScriptPath = try AbsolutePath(validating: "jni_export.map", relativeTo: AbsolutePath(validating: scratch))
+            try localFileSystem.writeChanges(path: versionScriptPath, bytes: ByteString(encodingAsUTF8: versionScript))
+            xlinker += ["--version-script=\(versionScriptPath.pathString)"]
+            //xlinker += ["-T"]
+        }
+
+        // produce a shared object instead of an executable when we are linking dynamic tests
+        // this is diabled because we don't actually need it (the executable is loadable as a shared library anyway),
+        // and when building with macros we get an error
+        // (likely because the flags are being passed to the host compiler as well as the cross-compiler):
+        //
+        // `ld: unknown options: -shared -no-pie`
+        /*
+        if testMode == .sharedObject {
+            xlinker += ["-shared", "-no-pie"]
+        }
+        */
+
+        // always set the TARGET_OS_ANDROID environment and build constant, regardless of bridging
+        env["TARGET_OS_ANDROID"] = "1"
+        xswiftc += ["-DTARGET_OS_ANDROID"]
+
+        for xswiftc in xswiftc {
+            cmd += ["-Xswiftc", xswiftc]
+        }
+        for xcc in xcc {
+            cmd += ["-Xcc", xcc]
+        }
+        for xlinker in xlinker {
+            cmd += ["-Xlinker", xlinker]
+        }
+        for xcxx in toolchainOptions.xcxx {
+            cmd += ["-Xcxx", xcxx]
+        }
+        // when executable is specified, then the arguments are the command to run;
+        // otherwise, they are considered build arguments
+        if executable == nil {
+            cmd += args
+        }
+
+        try await runCommand(command: cmd, env: env, with: out)
+
+        return (cmd: cmd, env: env)
+    }
+
+    // filter out some of the native Android libraries that are located in the same folder as the Swift libraries
+    // including these are unnecessary and also results in a hang when running test cases
+    // This is only for pre-6.1 SDKs that mingle the NDK and the Swift Android SDK into a single root folder
+    var builtinLibraries: Set<String> {
+        [
+            "libandroid.so",
+            "libc.so",
+            "libm.so",
+            "libc++.so",
+            "libdl.so",
+            "liblog.so",
+
+            "libcamera2ndk.so",
+            "libjnigraphics.so",
+            "libmediandk.so",
+            "libvulkan.so",
+            "libEGL.so",
+            "libGLESv1_CM.so",
+            "libGLESv2.so",
+            "libGLESv3.so",
+            "libOpenMAXAL.so",
+            "libOpenSLES.so",
+        ]
+    }
+
+
     /// Run `swift build` for the given Android architectures, optionally running the test cases on the device or copying all the files to the given `archiveOutputFolder`
     func runSwiftPM(cleanup: Bool? = nil, execute executable: String? = nil, commandEnvironment: [String] = [], defaultArch: AndroidArchArgument, remoteFolder: String? = nil, copy: [String] = [], archiveOutputFolder: URL? = nil, testingLibrary: TestingLibrary?, with out: MessageQueue) async throws {
         let buildConfig = toolchainOptions.configuration ?? BuildConfiguration.fromEnvironment() ?? .debug
@@ -351,145 +788,12 @@ fileprivate extension AndroidOperationCommand {
         let architectures = archs.flatMap({ $0.architectures(configuration: buildConfig) }).uniqueElements()
         for arch in architectures {
             let tc = try buildToolchainConfiguration(for: arch)
-
-            var env: [String: String] = ProcessInfo.processInfo.environmentWithDefaultToolPaths
             let toolchainBin = tc.toolchainPath.appendingPathComponent("usr/bin", isDirectory: true)
-            let toolchainLib = tc.toolchainPath.appendingPathComponent("usr/lib", isDirectory: true)
-            // when some older version of ld is earlier in the path, a user reported an error like "ld: unsupported tapi file type '!tapi-tbd' in YAML file" when trying to build; this should in theory avoid that, but there was an error where "/Users/USERNAME/anaconda3/bin/ld" was earlier in the PATH; prepending "/usr/bin/ld" to the PATH should be enough to work around this
-            let path = toolchainBin.path + ":/usr/bin:" + (env["PATH"] ?? "")
-            env["PATH"] = path
-            // when Xcode invokes gradle which invokes `skip android build` which invokes `swift build`,
-            // the inherited SDKROOT will be something like "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.0.sdk",
-            // which will break the build.
-            // So we manually clear the SDKROOT environment variable in case it is set.
-            env["SDKROOT"] = nil
-
-            // Clear ANDROID_NDK_ROOT to work around Android cross-compilation build failures
-            // https://github.com/finagolfin/swift-android-sdk/issues/207
-            env["ANDROID_NDK_ROOT"] = nil
-
-            // We also need to clear out any environment variables that may change between runs (like LLBUILD_BUILD_ID='4288622949' LLBUILD_LANE_ID='9' LLBUILD_TASK_ID='31650009000f'), since those will prevent incremental builds from happening and force a complete rebuild each time
-            if env["XCODE_VERSION_MAJOR"] != nil {
-                let permittedEnvironment: Set<String> = [
-                    "PATH", "HOME", "HOMEBREW_PREFIX", "JAVA_HOME", "LANG", "LOGNAME", "PWD", "SHELL", "SWIFTLY_BIN_DIR", "SWIFTLY_HOME_DIR", "TMPDIR", "USER"
-                ]
-                env = env.filter({ (key, value) in
-                    permittedEnvironment.contains(key)
-                    || key.hasPrefix("SKIP_") // "SKIP_COMMAND_OVERRIDE"
-                    || key.hasPrefix("ANDROID_") // "ANDROID_HOME", "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK", "ANDROID_SERIAL"
-                })
-            }
-
             let swiftCmd = toolchainBin.appendingPathComponent("swift", isDirectory: false).path
-            if !FileManager.default.fileExists(atPath: swiftCmd) {
-                throw CrossCompilerError(errorDescription: "Could not locate swift command at: \(swiftCmd)")
-            }
-            var cmd: [String] = []
-            var xswiftc = toolchainOptions.xswiftc
-            var xcc = toolchainOptions.xcc
-            var xlinker = toolchainOptions.xlinker
-
-            cmd += [swiftCmd]
-            cmd += ["build"]
-
-            if let destinationURL = tc.destinationURL {
-                cmd += ["--destination", destinationURL.path]
-            } else if let sdkName = tc.sdkName {
-                cmd += ["--swift-sdk", sdkName]
-            }
 
             let runTests = cleanup != nil && executable == nil
-            if runTests {
-                cmd += ["--build-tests"]
-                // plugin-path is a workaround for https://github.com/swiftlang/swift-package-manager/issues/8362
-                xswiftc += ["-plugin-path", toolchainLib.appendingPathComponent("swift/host/plugins/testing", isDirectory: true).path]
-            }
-            // pass-through the "--verbose" flag to the underlying build command
-            if outputOptions.verbose {
-                cmd += ["--verbose"]
-            }
-            // pass-through the "--package-path" flag to the underlying build command
-            if let packagePath = toolchainOptions.packagePath {
-                cmd += ["--package-path", packagePath]
-            }
-            // pass-through the "--scratch-path" flag to the underlying build command
-            if let scratchPath = toolchainOptions.scratchPath {
-                cmd += ["--scratch-path", scratchPath]
-            }
-            // pass-through the "--configuration" flag to the underlying build command
-            if let configuration = toolchainOptions.configuration {
-                cmd += ["--configuration", configuration.rawValue]
-            }
 
-            if toolchainOptions.bridge {
-                xswiftc += ["-DSKIP_BRIDGE"]
-                // set the SKIP_BRIDGE flag, which is transferred through to a build #define in SkipBridge and can be used to check whether the current build mode is targetting JNI
-                env["SKIP_BRIDGE"] = "1"
-            }
-
-            if toolchainOptions.aggregate {
-                cmd += ["--static-swift-stdlib"]
-                xswiftc += ["-L" + tc.libPathStatic.path]
-                xswiftc += ["-lc++_shared"]
-                xswiftc += ["-llog"]
-                xswiftc += ["-Osize"]
-
-                // enables dead stripping of unused runtime functions: swiftc -Xcc -ffunction-sections -Xcc -fdata-sections -Xcc -mthumb -Xlinker --gc-sections -Xfrontend -metadata-sections -Xfrontend -function-sections -Xfrontend -data-sections -static-stdlib -target -lswiftCore -lswiftStdlibStubsBaremetal -lstdc++_nano -lc -lg -lm -lgcc -Xlinker -T -Xlinker ./linker.ld imp.o unicode.o test.swift
-                xswiftc += ["-Xfrontend", "-function-sections"]
-                //xswiftc += ["-Xfrontend", "-data-sections"]
-                //xswiftc += ["-Xfrontend", "-metadata-sections"]
-                xcc += ["-ffunction-sections"]
-                xcc += ["-fdata-sections"]
-                xcc += ["-fvisibility=hidden"]
-                xcc += ["-fmerge-all-constants"]
-
-                // garbage collect unused sections
-                xlinker += ["--gc-sections"]
-                //xlinker += ["--print-gc-sections"] // debug removed sections
-                //xlinker += ["--strip-debug"]
-
-                // create a linker version script that excludes all global symbols other than the JNI-exported functions
-                let versionScript = """
-                    {
-                      global:
-                        Java_*;
-                        JNI_*;
-                      local:
-                        *;
-                    };
-
-                    """
-
-                let scratch = try toolchainOptions.scratchPath ?? createTempDir().path
-                let versionScriptPath = try AbsolutePath(validating: "jni_export.map", relativeTo: AbsolutePath(validating: scratch))
-                try localFileSystem.writeChanges(path: versionScriptPath, bytes: ByteString(encodingAsUTF8: versionScript))
-                xlinker += ["--version-script=\(versionScriptPath.pathString)"]
-                //xlinker += ["-T"]
-            }
-
-            // always set the TARGET_OS_ANDROID environment and build constant, regardless of bridging
-            env["TARGET_OS_ANDROID"] = "1"
-            xswiftc += ["-DTARGET_OS_ANDROID"]
-
-            for xswiftc in xswiftc {
-                cmd += ["-Xswiftc", xswiftc]
-            }
-            for xcc in xcc {
-                cmd += ["-Xcc", xcc]
-            }
-            for xlinker in xlinker {
-                cmd += ["-Xlinker", xlinker]
-            }
-            for xcxx in toolchainOptions.xcxx {
-                cmd += ["-Xcxx", xcxx]
-            }
-            // when executable is specified, then the arguments are the command to run;
-            // otherwise, they are considered build arguments
-            if executable == nil {
-                cmd += args
-            }
-
-            try await runCommand(command: cmd, env: env, with: out)
+            let (_, env) = try await runToolchainCommand(tc, executable: executable, testMode: runTests ? .executable : nil, with: out)
 
             let buildOutputFolder = [
                 // the output folder is either the scratch path we have specified, or is the default package/.build output directory
@@ -513,29 +817,6 @@ fileprivate extension AndroidOperationCommand {
                 if !FileManager.default.fileExists(atPath: libFolder.path) {
                     throw AndroidError(errorDescription: "Android SDK library folder did not exist at: \(libFolder)")
                 }
-
-                // filter out some of the native Android libraries that are located in the same folder as the Swift libraries
-                // including these are unnecessary and also results in a hang when running test cases
-                // This is only for pre-6.1 SDKs that mingle the NDK and the Swift Android SDK into a single root folder
-                let builtinLibraries: Set<String> = [
-                    "libandroid.so",
-                    "libc.so",
-                    "libm.so",
-                    "libc++.so",
-                    "libdl.so",
-                    "liblog.so",
-
-                    "libcamera2ndk.so",
-                    "libjnigraphics.so",
-                    "libmediandk.so",
-                    "libvulkan.so",
-                    "libEGL.so",
-                    "libGLESv1_CM.so",
-                    "libGLESv2.so",
-                    "libGLESv3.so",
-                    "libOpenMAXAL.so",
-                    "libOpenSLES.so",
-                ]
 
                 // check for .so files like libswift_Concurrency.so or libxml2.so.2.13.3
                 // we need to preserve symbolic links because some libraries link to a linked version
@@ -672,7 +953,7 @@ fileprivate extension AndroidOperationCommand {
         try FileManager.default.createDirectory(at: tempURL, withIntermediateDirectories: true)
         return tempURL
     }
-    
+
     /// Returns true if the given URL is a directory
     /// - Parameters:
     ///   - url: the file URL to check
@@ -799,8 +1080,10 @@ fileprivate extension AndroidOperationCommand {
             throw CrossCompilerError(errorDescription: "The Swift Android SDK did not contain an NDK sysroot at \(sdkRoot.path)")
         }
 
-        let libSysrootBase = sdkRoot
+        let sysrootDir = sdkRoot
             .appendingPathComponent(sysrootPath, isDirectory: true)
+
+        let libSysrootBase = sysrootDir
             .appendingPathComponent("usr/lib", isDirectory: true)
 
         let libSysrootArch = libSysrootBase
@@ -849,7 +1132,7 @@ fileprivate extension AndroidOperationCommand {
         }
 
         let toolchainPath = try swiftToolchainFolder(sdkVersion: swiftSDKVersion)
-        return ToolchainPaths(toolchainPath: toolchainPath, swiftSDKVersion: swiftSDKVersion, destinationURL: nil, sdkName: sdkName, libPathDynamic: libPathDynamic, libPathStatic: libPathStatic, libSysrootArch: libSysrootArch)
+        return ToolchainPaths(toolchainPath: toolchainPath, swiftSDKVersion: swiftSDKVersion, destinationURL: nil, sdkName: sdkName, libPathDynamic: libPathDynamic, libPathStatic: libPathStatic, libSysrootArch: libSysrootArch, sysrootDir: sysrootDir)
     }
 
     func swiftToolchainFolder(sdkVersion: String) throws -> URL {
@@ -981,52 +1264,6 @@ struct AndroidRunCommand: AndroidOperationCommand {
 }
 
 @available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
-struct AndroidTestCommand: AndroidOperationCommand {
-    static var configuration = CommandConfiguration(
-        commandName: "test",
-        abstract: "Test the native project on an Android device or emulator",
-        shouldDisplay: true)
-
-    @OptionGroup(title: "Output Options")
-    var outputOptions: OutputOptions
-
-    @OptionGroup(title: "Tool Options")
-    var toolOptions: ToolOptions
-
-    @Flag(inversion: .prefixedNo, help: ArgumentHelp("Cleanup test folders after running"))
-    var cleanup: Bool = true
-
-    @Option(help: ArgumentHelp("Remote folder on emulator/device for build upload", valueName: "path"))
-    var remoteFolder: String? = nil
-
-    @OptionGroup(title: "Toolchain Options")
-    var toolchainOptions: ToolchainOptions
-
-    // TODO: how to handle test case filter/skip? It isn't an argument to `swift build`, and the _SWIFTPM_SKIP_TESTS_LIST environment variable doesn't seem to work
-    //@Option(help: ArgumentHelp("Skip test cases matching regular expression", valueName: "skip"))
-    //var skip: [String] = []
-    //@Option(help: ArgumentHelp("Run test cases matching regular expression", valueName: "filter"))
-    //var filter: [String] = []
-
-    @Option(help: ArgumentHelp("Testing library name", valueName: "library"))
-    var testingLibrary: TestingLibrary = .all
-
-    @Option(help: ArgumentHelp("Environment key/value pairs for remote execution", valueName: "key=value"))
-    var env: [String] = []
-
-    @Option(help: ArgumentHelp("Additional files or folders to copy to Android", valueName: "file/folder"))
-    var copy: [String] = []
-
-    /// Any arguments that are not recognized are passed through to the underlying swift build command
-    @Argument(parsing: .allUnrecognized, help: ArgumentHelp("Command arguments"))
-    var args: [String] = []
-
-    func performCommand(with out: MessageQueue) async throws {
-        try await runSwiftPM(cleanup: cleanup, commandEnvironment: env, defaultArch: .current, remoteFolder: remoteFolder, copy: copy, testingLibrary: testingLibrary, with: out)
-    }
-}
-
-@available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
 struct AndroidEmulatorCommand: AsyncParsableCommand {
     static var configuration = CommandConfiguration(
         commandName: "emulator",
@@ -1040,7 +1277,7 @@ struct AndroidEmulatorCommand: AsyncParsableCommand {
 }
 
 @available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
-struct AndroidEmulatorCreateCommand: MessageCommand {
+struct AndroidEmulatorCreateCommand: MessageCommand, ToolOptionsCommand {
     static var configuration = CommandConfiguration(
         commandName: "create",
         abstract: "Install and create an Android emulator image",
@@ -1064,11 +1301,14 @@ struct AndroidEmulatorCreateCommand: MessageCommand {
     @OptionGroup(title: "Output Options")
     var outputOptions: OutputOptions
 
+    @OptionGroup(title: "Tool Options")
+    var toolOptions: ToolOptions
+
     @Option(help: ArgumentHelp("Android API emulator level", valueName: "level"))
-    var androidAPILevel: Int = 34
+    var androidAPILevel: Int = defaultEmulatorAPILevel
 
     @Option(help: ArgumentHelp("Android emulator device profile", valueName: "profile"))
-    var deviceProfile: String = "medium_phone" // "pixel_7"
+    var deviceProfile: String = defaultEmulatorDeviceProfile
 
     @Option(name: [.customShort("n"), .long], help: ArgumentHelp("Android emulator name", valueName: "name"))
     var name: String? = nil
@@ -1097,48 +1337,37 @@ struct AndroidEmulatorCreateCommand: MessageCommand {
     }()
 
     func performCommand(with out: MessageQueue) async throws {
-        func sdkmanagerInstall(_ package: String) async throws {
-            try await run(with: out, "Install \(package)", ["sdkmanager", "--verbose", "--install", package])
-        }
+        
+        let actualAPILevel = self.androidAPILevel
 
+        var defaultName = "emulator-\(actualAPILevel)"
+        defaultName += "-\(deviceProfile.lowercased().replacing(" ", with: "-"))"
+        let emulatorName = name ?? defaultName
+
+        let emulatorSpec = self.package ?? "system-images;android-\(androidAPILevel);\(systemImage);\(arch)"
+        let emulatorSpecParts = emulatorSpec.split(separator: ";")
+        let androidPlatform = emulatorSpecParts.dropFirst().first ?? "android-\(androidAPILevel)"
+
+        let _ = try await ensureCmdlineTools(
+            command: self,
+            additionalComponents: ["platforms;\(androidPlatform)", emulatorSpec],
+            out: out
+        )
+        
         await withLogStream(title: "Create Android emulator", with: out) {
-            try await run(with: out, "Configure Android SDK Manager", ["sh", "-c", "yes | sdkmanager --licenses"])
+            let avdNames = try await listAVDNames(command: self, out: out)
+            if avdNames.contains(emulatorName) {
+                await out.write(status: .skip, "AVD '\(emulatorName)' already exists - skipping creation")
+                return
+            }
 
-            try await sdkmanagerInstall("platform-tools")
-            try await sdkmanagerInstall("emulator")
-
-            let emulatorSpec = self.package ?? "system-images;android-\(androidAPILevel);\(systemImage);\(arch)"
-
-            let emulatorSpecParts = emulatorSpec.split(separator: ";")
-            let androidPlatform = emulatorSpecParts.dropFirst().first ?? "android-\(androidAPILevel)"
-            let actualAPILevel = androidPlatform.split(separator: "-").last.flatMap({ Int($0) }) ?? self.androidAPILevel
-
-            try await sdkmanagerInstall("platforms;\(androidPlatform)")
-
-            try await sdkmanagerInstall(emulatorSpec)
-
-            var defaultName = "emulator-\(actualAPILevel)"
-            //if let deviceProfile {
-                defaultName += "-\(deviceProfile.lowercased().replacing(" ", with: "-"))"
-            //}
-            let emulatorName = name ?? defaultName
-
-            var createCommand = ["avdmanager", "create", "avd", "--force", "-n", emulatorName, "--package", emulatorSpec]
-            //if let deviceProfile {
-                createCommand += ["--device", deviceProfile]
-            //}
+            let createArgs = ["create", "avd", "--force", "-n", emulatorName, "--package", emulatorSpec, "--device", deviceProfile]
 
             // need to pipe through "no" to decline "Do you wish to create a custom hardware profile? [no]"
-            try await run(with: out, "Create emulator: \(emulatorName)", createCommand)
-
-            // save the emulatorName as the default for `skip android emulator launch`
-            UserDefaults.standard.set(emulatorName, forKey: lastEmulatorNameDefault)
+            _ = try await self.runTool("avdmanager", with: out, "Create emulator: \(emulatorName)", arguments: createArgs)
         }
     }
 }
-
-/// The UserDefaults key that remembers the last name of the emulator thay was created
-private let lastEmulatorNameDefault = "skipAndroidEmulatorLaunch"
 
 
 @available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
@@ -1147,7 +1376,7 @@ struct AndroidEmulatorLaunchCommand: MessageCommand, ToolOptionsCommand {
         commandName: "launch",
         abstract: "Launch an Android emulator",
         usage: """
-        # Launches the most recently created or used emulator
+        # Launches the single available emulator, or the default if multiple exist
         skip android emulator launch
 
         # Launches an emulator with a certain name
@@ -1194,8 +1423,24 @@ struct AndroidEmulatorLaunchCommand: MessageCommand, ToolOptionsCommand {
         var exitCode: SkipDriveExternal.ProcessResult.ExitStatus? = nil
         //~/Library/Android/sdk/emulator/emulator -avd emulator-34-pixel_7
 
-        let emulatorName = name ?? UserDefaults.standard.string(forKey: lastEmulatorNameDefault) ?? "unknown"
-        UserDefaults.standard.set(emulatorName, forKey: lastEmulatorNameDefault)
+        let emulatorName: String
+        if let name {
+            emulatorName = name
+        } else {
+            let avdNames = try await listAVDNames(command: self, out: out)
+            switch avdNames.count {
+            case 0:
+                throw EmulatorLaunchSelectionError(avdNames: [])
+            case 1:
+                emulatorName = avdNames[0]
+            default:
+                if avdNames.contains(defaultEmulatorCreateName) {
+                    emulatorName = defaultEmulatorCreateName
+                } else {
+                    throw EmulatorLaunchSelectionError(avdNames: avdNames)
+                }
+            }
+        }
 
         var emulatorArgs = ["@\(emulatorName)", "-no-metrics"]
         if self.headless {
@@ -1349,6 +1594,15 @@ public struct AndroidError : LocalizedError {
     public var errorDescription: String?
 }
 
+/// Paths to Android SDK build tools needed for APK construction
+struct AndroidBuildTools {
+    let aapt2: String
+    let d8: String
+    let zipalign: String
+    let apksigner: String
+    let androidJar: String
+}
+
 struct ToolchainPaths {
     let toolchainPath: URL
     let swiftSDKVersion: String
@@ -1357,6 +1611,7 @@ struct ToolchainPaths {
     let libPathDynamic: URL
     let libPathStatic: URL
     let libSysrootArch: URL
+    let sysrootDir: URL
 }
 
 /// The library for `swift test`
@@ -1367,6 +1622,11 @@ enum TestingLibrary: String, ExpressibleByArgument {
     case testing
     /// Test only with the XCTest library
     case xctest
+}
+
+enum TestingMode {
+    case executable
+    case sharedObject
 }
 
 
@@ -1723,9 +1983,14 @@ struct SwiftSDKOpenAPI {
     }
 }
 
-fileprivate extension URL {
+extension URL {
     var homeDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    /// Adds the given string to the end of the path, but before the extension. E.g., `foo.apk` -> `foo-suffix.apk`
+    func appendingToLastPathComponent(_ suffix: String) -> URL {
+        self.deletingLastPathComponent().appendingPathComponent(self.deletingPathExtension().lastPathComponent + suffix + "." + self.pathExtension)
     }
 }
 
@@ -1744,4 +2009,56 @@ extension Collection where Element: Hashable {
         }
         return result
     }
+}
+
+
+// MARK: - AVD Existence Check
+
+/// Default API level and device profile for `skip android emulator create` when called with no arguments
+private let defaultEmulatorAPILevel = 34
+private let defaultEmulatorDeviceProfile = "medium_phone" // "pixel_7"
+
+/// Default AVD name created by `skip android emulator create` when called with no arguments
+private let defaultEmulatorCreateName = "emulator-\(defaultEmulatorAPILevel)-\(defaultEmulatorDeviceProfile)"
+
+/// Error thrown when emulator command cannot be executed
+struct EmulatorListAVDsError: LocalizedError {
+    let underlyingError: Error
+
+    var errorDescription: String? {
+        "Failed to run emulator -list-avds: \(underlyingError.localizedDescription)"
+    }
+}
+
+/// Error when no emulator name can be selected (no AVDs or multiple AVDs with no default match)
+struct EmulatorLaunchSelectionError: LocalizedError {
+    let avdNames: [String]
+
+    var errorDescription: String? {
+        if avdNames.isEmpty {
+            return "No Android emulators (AVDs) were found. Create one with: skip android emulator create"
+        } else {
+            let list = avdNames.sorted().joined(separator: ", ")
+            return "Multiple Android emulators were found (\(list)). When no --name is specified, we launch the default emulator '\(defaultEmulatorCreateName)' created by `skip android emulator create`. None of the installed AVDs match that name. Either run `skip android emulator create` to create it, or specify one with --name (e.g. skip android emulator launch --name \(avdNames.first ?? "name"))"
+        }
+    }
+}
+
+/// Returns the list of AVD names from `emulator -list-avds`
+/// - Throws: EmulatorListAVDsError if emulator command fails
+@available(macOS 13, iOS 16, tvOS 16, watchOS 8, *)
+func listAVDNames(command: some MessageCommand, out: MessageQueue) async throws -> [String] {
+    let output: ProcessOutput
+    do {
+        let result = try await command.run(
+            with: out,
+            "List available AVDs",
+            ["emulator", "-list-avds"],
+        )
+        output = try result.get()
+    } catch {
+        throw EmulatorListAVDsError(underlyingError: error)
+    }
+    let stdout = output.stdout
+    return stdout.split(separator: "\n").map { $0.trimmingCharacters(in: CharacterSet.whitespaces) }.filter { !$0.isEmpty }
 }

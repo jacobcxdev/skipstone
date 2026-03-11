@@ -8,24 +8,21 @@ import Universal
 import SkipSyntax
 import TSCBasic
 
-protocol TranspilePhase: TranspilerInputOptionsCommand {
-    var transpileOptions: TranspileCommandOptions { get }
-}
-
 /// The file extension for the metadata about skipcode
 let skipcodeExtension = ".skipcode.json"
 
-struct TranspileCommand: TranspilePhase, StreamingCommand {
-    static var configuration = CommandConfiguration(commandName: "transpile", abstract: "Transpile Swift to Kotlin", shouldDisplay: false)
+/// The command executed by the Skip plugin that will perform all the actions to transform a SwiftPM module into a Gradle project, including transpiling source code, building native bridges, and processing resources.
+struct SkipstoneCommand: BuildPluginOptionsCommand, StreamingCommand {
+    static var configuration = CommandConfiguration(commandName: "skipstone", abstract: "Convert Swift project to Gradle", shouldDisplay: false, aliases: ["transpile"])
 
     /// The `ENABLE_PREVIEW` parameter specifies whether we are building for previews
     static let enablePreviews = ProcessInfo.processInfo.environment["ENABLE_PREVIEWS"] == "YES"
 
     @OptionGroup(title: "Check Options")
-    var inputOptions: TranspilerInputOptions
+    var inputOptions: SkipstoneInputOptions
 
-    @OptionGroup(title: "Transpile Options")
-    var transpileOptions: TranspileCommandOptions
+    @OptionGroup(title: "Skipstone Options")
+    var skipstoneOptions: SkipstoneCommandOptions
 
     @OptionGroup(title: "Output Options")
     var outputOptions: OutputOptions
@@ -34,27 +31,27 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
         let transpilation: Transpilation
 
         func message(term: Term) -> String? {
-            // successful transpile outputs no message so as to not clutter xcode logs
+            // successful run outputs no message so as to not clutter xcode logs
             return nil
         }
     }
 
     var moduleNamePaths: [(module: String, path: String)] {
-        transpileOptions.moduleNames.map({
+        skipstoneOptions.moduleNames.map({
             let parts = $0.split(separator: ":")
             return (module: parts.first?.description ?? "", path: parts.last?.description ?? "")
         })
     }
 
     var linkNamePaths: [(module: String, link: String)] {
-        transpileOptions.linkPaths.map({
+        skipstoneOptions.linkPaths.map({
             let parts = $0.split(separator: ":")
             return (module: parts.first?.description ?? "", link: parts.last?.description ?? "")
         })
     }
 
     var dependencyIdPaths: [(targetName: String, packageID: String, packagePath: String)] {
-        transpileOptions.dependencies.compactMap({
+        skipstoneOptions.dependencies.compactMap({
             let parts = $0.split(separator: ":").map(\.description)
             if parts.count != 3 { return nil }
             return (targetName: parts[0], packageID: parts[1], packagePath: parts[2])
@@ -78,16 +75,16 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
             return
         }
 
-        // show the local time in the transpile output; this helps identify from the Xcode Navigator when an old log file is being replayed for a plugin re-execution
+        // show the local time in the plugin output; this helps identify from the Xcode Navigator when an old log file is being replayed for a plugin re-execution
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "HH:mm:ss"
 
-        guard let moduleRoot = transpileOptions.moduleRoot else {
+        guard let moduleRoot = skipstoneOptions.moduleRoot else {
             throw error("Must specify --module-root")
         }
         let moduleRootPath = try AbsolutePath(validating: moduleRoot)
 
-        guard let skipFolder = transpileOptions.skipFolder else {
+        guard let skipFolder = skipstoneOptions.skipFolder else {
             throw error("Must specify --skip-folder")
         }
 
@@ -98,21 +95,21 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
         let skipFolderPath = try AbsolutePath(validating: skipFolder, relativeTo: baseOutputPath)
 
         // the --project flag
-        let projectFolderPath = try AbsolutePath(validating: transpileOptions.projectFolder, relativeTo: baseOutputPath)
+        let projectFolderPath = try AbsolutePath(validating: skipstoneOptions.projectFolder, relativeTo: baseOutputPath)
 
-        guard let outputFolder = transpileOptions.outputFolder else {
+        guard let outputFolder = skipstoneOptions.outputFolder else {
             throw error("Must specify --output-folder")
         }
         let outputFolderPath = try AbsolutePath(validating: outputFolder, relativeTo: baseOutputPath)
 
 
-        info("Skip \(v): skipstone plugin to: \(transpileOptions.outputFolder ?? "nowhere") at \(dateFormatter.string(from: .now))")
-        try await self.transpile(root: baseOutputPath, project: projectFolderPath, module: moduleRootPath, skip: skipFolderPath, output: outputFolderPath, fs: fs, with: out)
+        info("Skip \(v): skipstone plugin to: \(skipstoneOptions.outputFolder ?? "nowhere") at \(dateFormatter.string(from: .now))")
+        try await self.skipstone(root: baseOutputPath, project: projectFolderPath, module: moduleRootPath, skip: skipFolderPath, output: outputFolderPath, fs: fs, with: out)
     }
 
-    private func transpile(root rootPath: AbsolutePath, project projectFolderPath: AbsolutePath, module moduleRootPath: AbsolutePath, skip skipFolderPath: AbsolutePath, output outputFolderPath: AbsolutePath, fs: FileSystem, with out: MessageQueue) async throws {
+    private func skipstone(root rootPath: AbsolutePath, project projectFolderPath: AbsolutePath, module moduleRootPath: AbsolutePath, skip skipFolderPath: AbsolutePath, output outputFolderPath: AbsolutePath, fs: FileSystem, with out: MessageQueue) async throws {
         do {
-            try await transpileThrows(root: rootPath, project: projectFolderPath, module: moduleRootPath, skip: skipFolderPath, output: outputFolderPath, fs: fs, with: out)
+            try await skipstoneThrows(root: rootPath, project: projectFolderPath, module: moduleRootPath, skip: skipFolderPath, output: outputFolderPath, fs: fs, with: out)
         } catch {
             // ensure that the error is logged in some way before failing
             self.error("Skip \(skipVersion) error: \(error.localizedDescription)")
@@ -120,8 +117,8 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
         }
     }
 
-    private func transpileThrows(root rootPath: AbsolutePath, project projectFolderPath: AbsolutePath, module moduleRootPath: AbsolutePath, skip skipFolderPath: AbsolutePath, output outputFolderPath: AbsolutePath, fs: FileSystem, with out: MessageQueue) async throws {
-        trace("transpileThrows: rootPath=\(rootPath), projectFolderPath=\(projectFolderPath), moduleRootPath=\(moduleRootPath), skipFolderPath=\(skipFolderPath), outputFolderPath=\(outputFolderPath)")
+    private func skipstoneThrows(root rootPath: AbsolutePath, project projectFolderPath: AbsolutePath, module moduleRootPath: AbsolutePath, skip skipFolderPath: AbsolutePath, output outputFolderPath: AbsolutePath, fs: FileSystem, with out: MessageQueue) async throws {
+        trace("skipstoneThrows: rootPath=\(rootPath), projectFolderPath=\(projectFolderPath), moduleRootPath=\(moduleRootPath), skipFolderPath=\(skipFolderPath), outputFolderPath=\(outputFolderPath)")
 
         // the path that will contain the `skip.yml`
 
@@ -134,11 +131,11 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
         let cmakeLists = projectFolderPath.appending(component: "CMakeLists.txt")
         let isCMakeProject = fs.exists(cmakeLists)
         if !isCMakeProject && !fs.isDirectory(skipFolderPath) {
-            throw error("In order to transpile the module, a Skip/ folder must exist and contain a skip.yml file at: \(skipFolderPath)")
+            throw error("In order for Skip to process the module, a Skip/ folder must exist and contain a skip.yml file at: \(skipFolderPath)")
         }
 
         // when renaming SomeClassA.swift to SomeClassB.swift, the stale SomeClassA.kt file from previous runs will be left behind, and will then cause a "Redeclaration:" error from the Kotlin compiler if they declare the same types
-        // so keep a snapshot of the output folder files that existed at the start of the transpile operation, so we can then clean up any output files that are no longer being produced
+        // so keep a snapshot of the output folder files that existed at the start of the skipstone operation, so we can then clean up any output files that are no longer being produced
         let outputFilesSnapshot: [URL] = try FileManager.default.enumeratedURLs(of: outputFolderPath.asURL)
         //msg(.warning, "transpiling to \(outputFolderPath.pathString) with existing files: \(outputFilesSnapshot.map(\.lastPathComponent).sorted().joined(separator: ", "))")
 
@@ -207,6 +204,13 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
         let isAppModule = fs.isFile(moduleXCConfig)
 
         let _ = primaryModulePath
+
+        /// A collected resource entry with its URLs and mode
+        struct ResourceEntry {
+            let path: String
+            let urls: [URL]
+            let isCopyMode: Bool
+        }
 
         func buildSourceList() throws -> (sources: [URL], resources: [URL]) {
             let projectBaseURL = projectFolderPath.asURL
@@ -282,13 +286,29 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
             //.prettyPrinted, // compacting JSON significantly reduces the size of the codebase files
         ]
 
-        let sourcehashOutputPath = try AbsolutePath(validating: transpileOptions.sourcehash)
+        let sourcehashOutputPath = try AbsolutePath(validating: skipstoneOptions.sourcehash)
         // We no longer remove the path because the plugin doesn't seem to require it to know to run in dependency order
         //removePath(sourcehashOutputPath) // delete the build completion marker to force its re-creation (removeFileTree doesn't throw when the file doesn't exist)
 
         // load and merge each of the skip.yml files for the dependent modules
         let (baseSkipConfig, mergedSkipConfig, configMap) = try loadSkipConfig(merge: true)
         let hasSkipFuse = configMap.keys.contains("SkipFuse")
+
+        // Build resource entries from skip.yml configuration, falling back to the default Resources/ folder
+        let resourceEntries: [ResourceEntry] = try {
+            let projectBaseURL = projectFolderPath.asURL
+            if let resourceConfigs = baseSkipConfig.skip?.resources {
+                return try resourceConfigs.map { config in
+                    let resourceDirURL = projectBaseURL.appendingPathComponent(config.path, isDirectory: true)
+                    let urls: [URL] = try FileManager.default.enumeratedURLs(of: resourceDirURL)
+                    return ResourceEntry(path: config.path, urls: urls, isCopyMode: config.isCopyMode)
+                }
+            } else if !resourceURLs.isEmpty {
+                return [ResourceEntry(path: "Resources", urls: resourceURLs, isCopyMode: false)]
+            } else {
+                return []
+            }
+        }()
 
         func moduleMode(for moduleName: String?) -> ModuleMode {
             let moduleMode: String?
@@ -383,7 +403,7 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
             try addLink(moduleBasePath.appending(component: buildSrcFolderName), pointingAt: buildSrcFolder, relative: false)
         }
 
-        // feed the transpiler the files to transpile and any compiled files to potentially bridge
+        // feed skipstone the files to transpile and any compiled files to potentially bridge
         var transpileFiles: [String] = []
         var swiftFiles: [String] = []
         for sourceFile in sourceURLs.map(\.path).sorted() {
@@ -398,6 +418,7 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
         try await transpiler.transpile(handler: handleTranspilation)
         try saveCodebaseInfo() // save out the ModuleName.skipcode.json
         try saveSkipBridgeCode()
+        try saveTestHarness()
 
         let sourceModules = try linkDependentModuleSources()
         try linkResources()
@@ -486,7 +507,7 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
 
         func saveSkipBridgeCode() throws {
             // create the generated bridge files when the SKIP_BRIDGE environment is set and the plugin passed the --skip-bridge-output flag to the tool
-            if let skipBridgeOutput = transpileOptions.skipBridgeOutput {
+            if let skipBridgeOutput = skipstoneOptions.skipBridgeOutput {
                 let skipBridgeOutputFolder = try AbsolutePath(validating: skipBridgeOutput)
 
                 let swiftBridgeFileNameTranspilationMap = skipBridgeTranspilations.reduce(into: Dictionary<String, Transpilation>()) { result, transpilation in
@@ -654,6 +675,30 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
                 } else {
                     return true
                 }
+            }
+        }
+
+        func saveTestHarness() throws {
+            // auto-generate an XCSkipTests.swift test harness when the plugin requested it
+            if let testHarnessOutput = skipstoneOptions.testHarnessOutput {
+                let testHarnessOutputPath = try AbsolutePath(validating: testHarnessOutput)
+                let harnessContents = """
+                // Auto-generated by Skip — do not edit
+                #if os(macOS) || os(Linux) // Skip transpiled tests only run on supported hosts
+                import Foundation
+                import XCTest
+                import SkipTest
+
+                /// This test case will run the transpiled tests for the Skip module.
+                final class XCSkipTests: XCTestCase, XCGradleHarness {
+                    public func testSkipModule() async throws {
+                        try await runGradleTests()
+                    }
+                }
+                #endif
+
+                """
+                try writeChanges(tag: "test harness", to: testHarnessOutputPath, contents: harnessContents.utf8Data, readOnly: true)
             }
         }
 
@@ -948,7 +993,7 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
             // when we are running with SKIP_BRIDGE, don't link over any files from the skip folder
             // failure to do this will result in (harmless) .kt files being copied over, but since no subsequent transpilation
             // will mark those as expected output file, they will raise warnings: "removing stale output file: …"
-            if transpileOptions.skipBridgeOutput != nil {
+            if skipstoneOptions.skipBridgeOutput != nil {
                 return []
             }
 
@@ -996,8 +1041,8 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
             }
 
             // when we are running with SKIP_BRIDGE, we don't need to write out the Kotlin (which has already been generated in the first pass of the plugin)
-            if transpileOptions.skipBridgeOutput != nil {
-                //warn("suppressing transpiled Kotlin due to transpileOptions.skipBridgeOutput")
+            if skipstoneOptions.skipBridgeOutput != nil {
+                //warn("suppressing transpiled Kotlin due to skipstoneOptions.skipBridgeOutput")
                 return
             }
 
@@ -1065,45 +1110,90 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
                 .appending(components: packageName.split(separator: ".").map(\.description))
                 .appending(component: "Resources")
 
-            for resourceFile in resourceURLs.map(\.path).sorted() {
-                let resourceFileCanonical = (resourceFile as NSString).standardizingPath
-                guard let resourceSourceURL = moduleNamePaths.compactMap({ (_, folder) -> URL? in
-                    let folderCanonical = (folder as NSString).standardizingPath
-                    guard resourceFileCanonical.hasPrefix(folderCanonical) else { return nil }
-                    let relativePath = String(resourceFileCanonical.dropFirst(folderCanonical.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-                    return URL(fileURLWithPath: relativePath, relativeTo: URL(fileURLWithPath: folderCanonical, isDirectory: true))
-                }).first else {
-                    // skip over resources that are not contained within the Resources/ folder (such as files in the Skip/ folder, which contain metadata that should not be copied)
-                    msg(.trace, "no module root parent for \(resourceFile)")
-                    continue
+            for entry in resourceEntries {
+                if entry.isCopyMode {
+                    try linkCopyResources(entry: entry, resourcesBasePath: resourcesBasePath)
+                } else {
+                    try linkProcessResources(entry: entry, resourcesBasePath: resourcesBasePath)
                 }
+            }
 
-                let sourcePath = try AbsolutePath(validating: resourceSourceURL.path)
+            /// Links resources in "copy" mode, preserving the directory hierarchy relative to the resource folder
+            func linkCopyResources(entry: ResourceEntry, resourcesBasePath: AbsolutePath) throws {
+                for resourceFile in entry.urls.map(\.path).sorted() {
+                    let resourceFileCanonical = (resourceFile as NSString).standardizingPath
+                    guard let resourceSourceURL = moduleNamePaths.compactMap({ (_, folder) -> URL? in
+                        let folderCanonical = (folder as NSString).standardizingPath
+                        guard resourceFileCanonical.hasPrefix(folderCanonical) else { return nil }
+                        let relativePath = String(resourceFileCanonical.dropFirst(folderCanonical.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        return URL(fileURLWithPath: relativePath, relativeTo: URL(fileURLWithPath: folderCanonical, isDirectory: true))
+                    }).first else {
+                        msg(.trace, "no module root parent for \(resourceFile)")
+                        continue
+                    }
 
+                    let sourcePath = try AbsolutePath(validating: resourceSourceURL.path)
+                    let resourceComponents = try RelativePath(validating: resourceSourceURL.relativePath).components
 
-                let resourceComponents = try RelativePath(validating: resourceSourceURL.relativePath).components
-                // all resources get put into a single "Resources/" folder in the jar, so drop the first item and replace it with "Resources/"
-                let components = resourceComponents.dropFirst(1)
-                let resourceSourcePath = try RelativePath(validating: components.joined(separator: "/"))
+                    // In copy mode, preserve the full directory hierarchy including the resource folder name
+                    // (e.g., "ResourcesCopy/subdir/file.txt"), matching Darwin's .copy() behavior where
+                    // the folder name becomes a subdirectory in the bundle.
+                    let resourceSourcePath = try RelativePath(validating: resourceComponents.joined(separator: "/"))
+                    let destinationPath = resourcesBasePath.appending(resourceSourcePath)
 
-                if sourcePath.parentDirectory.basename == buildSrcFolderName {
-                    trace("skipping resource linking for buildSrc/")
-                } else if isCMakeProject {
-                    trace("skipping resource linking for CMake project")
-                } else if sourcePath.extension == "xcstrings" {
-                    try convertStrings(resourceSourceURL: resourceSourceURL, sourcePath: sourcePath)
-                //} else if sourcePath.extension == "xcassets" {
-                    // TODO: convert various assets into Android res/ folder
-                } else { // non-processed resources are just linked directly from the package
-                    // the Android "res" folder is special: it is intended to store Android-specific resources like values/strings.xml, and will be linked into the archive's res/ folder
-                    let isAndroidRes = resourceComponents.first == "res"
-                    let destinationPath = (isAndroidRes ? resOutputFolder : resourcesBasePath).appending(resourceSourcePath)
-
-                    // only create links for files that exist
-                    if fs.isFile(sourcePath) {
-                        info("\(destinationPath.relative(to: moduleBasePath).pathString) linking to \(sourcePath.pathString)", sourceFile: sourcePath.sourceFile)
+                    if sourcePath.parentDirectory.basename == buildSrcFolderName {
+                        trace("skipping resource linking for buildSrc/")
+                    } else if isCMakeProject {
+                        trace("skipping resource linking for CMake project")
+                    } else if fs.isFile(sourcePath) {
+                        info("\(destinationPath.relative(to: moduleBasePath).pathString) copying to \(sourcePath.pathString)", sourceFile: sourcePath.sourceFile)
                         try fs.createDirectory(destinationPath.parentDirectory, recursive: true)
                         try addLink(destinationPath, pointingAt: sourcePath, relative: false)
+                    }
+                }
+            }
+
+            /// Links resources in "process" mode, flattening the hierarchy and performing special processing for .xcstrings and other files
+            func linkProcessResources(entry: ResourceEntry, resourcesBasePath: AbsolutePath) throws {
+                for resourceFile in entry.urls.map(\.path).sorted() {
+                    let resourceFileCanonical = (resourceFile as NSString).standardizingPath
+                    guard let resourceSourceURL = moduleNamePaths.compactMap({ (_, folder) -> URL? in
+                        let folderCanonical = (folder as NSString).standardizingPath
+                        guard resourceFileCanonical.hasPrefix(folderCanonical) else { return nil }
+                        let relativePath = String(resourceFileCanonical.dropFirst(folderCanonical.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        return URL(fileURLWithPath: relativePath, relativeTo: URL(fileURLWithPath: folderCanonical, isDirectory: true))
+                    }).first else {
+                        // skip over resources that are not contained within the resource folder
+                        msg(.trace, "no module root parent for \(resourceFile)")
+                        continue
+                    }
+
+                    let sourcePath = try AbsolutePath(validating: resourceSourceURL.path)
+
+                    let resourceComponents = try RelativePath(validating: resourceSourceURL.relativePath).components
+                    // all resources get put into a single "Resources/" folder in the jar, so drop the first item and replace it with "Resources/"
+                    let components = resourceComponents.dropFirst(1)
+                    let resourceSourcePath = try RelativePath(validating: components.joined(separator: "/"))
+
+                    if sourcePath.parentDirectory.basename == buildSrcFolderName {
+                        trace("skipping resource linking for buildSrc/")
+                    } else if isCMakeProject {
+                        trace("skipping resource linking for CMake project")
+                    } else if sourcePath.extension == "xcstrings" {
+                        try convertStrings(resourceSourceURL: resourceSourceURL, sourcePath: sourcePath)
+                    //} else if sourcePath.extension == "xcassets" {
+                        // TODO: convert various assets into Android res/ folder
+                    } else { // non-processed resources are just linked directly from the package
+                        // the Android "res" folder is special: it is intended to store Android-specific resources like values/strings.xml, and will be linked into the archive's res/ folder
+                        let isAndroidRes = resourceComponents.first == "res"
+                        let destinationPath = (isAndroidRes ? resOutputFolder : resourcesBasePath).appending(resourceSourcePath)
+
+                        // only create links for files that exist
+                        if fs.isFile(sourcePath) {
+                            info("\(destinationPath.relative(to: moduleBasePath).pathString) linking to \(sourcePath.pathString)", sourceFile: sourcePath.sourceFile)
+                            try fs.createDirectory(destinationPath.parentDirectory, recursive: true)
+                            try addLink(destinationPath, pointingAt: sourcePath, relative: false)
+                        }
                     }
                 }
             }
@@ -1334,15 +1424,12 @@ struct TranspileCommand: TranspilePhase, StreamingCommand {
     }
 }
 
-struct TranspileCommandOptions: ParsableArguments {
+struct SkipstoneCommandOptions: ParsableArguments {
     @Option(name: [.customLong("project"), .long], help: ArgumentHelp("The project folder to transpile", valueName: "folder"))
     var projectFolder: String // --project
 
     @Option(name: [.long], help: ArgumentHelp("The path to the source hash file to output", valueName: "path"))
     var sourcehash: String // --sourcehash
-
-    @Option(help: ArgumentHelp("Condition for transpile phase", valueName: "force/no"))
-    var transpile: PhaseGuard = .onDemand // --transpile
 
     @Option(name: [.customLong("module")], help: ArgumentHelp("ModuleName:SourcePath", valueName: "module"))
     var moduleNames: [String] = [] // --module name:path
@@ -1367,6 +1454,9 @@ struct TranspileCommandOptions: ParsableArguments {
 
     @Option(name: [.long], help: ArgumentHelp("Folder for SkipBridge generated Swift files", valueName: "suffix"))
     var skipBridgeOutput: String? = nil
+
+    @Option(name: [.long], help: ArgumentHelp("Path for auto-generated test harness", valueName: "path"))
+    var testHarnessOutput: String? = nil
 }
 
 
@@ -1374,19 +1464,6 @@ extension Universal.XMLNode {
     mutating func addPlist(key: String, stringValue: String) {
         append(Universal.XMLNode(elementName: "key", children: [.content(key)]))
         append(Universal.XMLNode(elementName: "string", children: [.content(stringValue)]))
-    }
-}
-
-
-struct TranspileResult {
-
-}
-
-extension TranspilePhase {
-    func performTranspileActions() async throws -> (check: CheckResult, transpile: TranspileResult) {
-        let checkResult = try await performSkippyCommands()
-        let transpileResult = TranspileResult()
-        return (checkResult, transpileResult)
     }
 }
 

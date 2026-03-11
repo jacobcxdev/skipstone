@@ -1,25 +1,25 @@
-name: Continuous Integration
+name: skipstone CI
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '0 11 * * *'
   workflow_dispatch:
   pull_request:
 
 jobs:
-  ci:
+  build-plugin:
     timeout-minutes: 30
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        swift:
+          - '6.2.3'
         os:
           - 'ubuntu-latest'
           - 'macos-latest'
-          #- 'windows-latest'
-        swift:
-          - '6.2.3'
-
     steps:
       - name: Checkout skipstone.git
         uses: actions/checkout@v6
@@ -27,35 +27,178 @@ jobs:
           # skip.git submodule needed for SkipDriveExternal
           submodules: true
 
-      - uses: swift-actions/setup-swift@v3
-        with:
-          swift-version: ${{ matrix.swift }}
+      - run: swift build
 
-      - name: Get swift version
-        run: swift --version
+      - run: swift test --parallel
 
-      - name: Check kotlinc
-        run: which kotlinc
+      # Building the Linux plugin requires the Static Linux SDK
+      - name: "Install Static Linux SDK"
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL --retry 5 -o 'swift-static-linux-sdk.tar.gz' 'https://download.swift.org/swift-${{ matrix.swift }}-release/static-sdk/swift-${{ matrix.swift }}-RELEASE/swift-${{ matrix.swift }}-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz'
+          swift sdk install 'swift-static-linux-sdk.tar.gz'
 
-      - name: Swift Test (Debug)
-        run: KOTLINC=kotlinc swift test -v -c debug --parallel
-
-      - name: Build plugin
+      - name: "Build ${{ runner.os }} plugin"
         shell: bash
         run: |
           # Build plugins using the current installed version of Swift
           export USE_SWIFTLY=0
+          # "macos" or "linux"
+          OSNAME=$(echo $RUNNER_OS | tr '[A-Z]' '[a-z]')
 
-          if [[ "${RUNNER_OS}" == "macOS" ]]; then
-            ./scripts/build_macos_plugin.sh
-          elif [[ "${RUNNER_OS}" == "Linux" ]]; then
-            # install the static linux SDK for MUSL cross-compilation
-            curl -fsSL -o 'swift-static-linux-sdk.tar.gz' 'https://download.swift.org/swift-${{ matrix.swift }}-release/static-sdk/swift-${{ matrix.swift }}-RELEASE/swift-${{ matrix.swift }}-RELEASE_static-linux-0.0.1.artifactbundle.tar.gz'
-            swift sdk install 'swift-static-linux-sdk.tar.gz'
+          ./scripts/build_${OSNAME}_plugin.sh
 
-            ./scripts/build_linux_plugin.sh
-          else
-            echo "::error::Unsupported platform: ${{ matrix.os }}"
-            exit 1
-          fi
+          BUILD_DIR="${PWD}/.build/artifactbundle-${OSNAME}"
+          SKIP_BIN="${BUILD_DIR}/skip.artifactbundle/bin"
+
+          # set the PATH to include the newly-built `skip` command
+          echo "${SKIP_BIN}" >> $GITHUB_PATH
+
+          # override skip plugin to use the locally built binary
+          echo "SKIP_COMMAND_OVERRIDE=${SKIP_BIN}/skip" >> $GITHUB_ENV
+
+          mkdir artifacts/
+          find "${BUILD_DIR}"
+          cp -av "${BUILD_DIR}"/*.zip artifacts/
+
+      - run: skip welcome
+
+      - name: "Upload Build Artifacts"
+        uses: actions/upload-artifact@v6
+        with:
+          name: skip-plugin-${{ runner.os }}
+          path: artifacts/
+
+  android-ci:
+    needs: build-plugin
+    timeout-minutes: 90
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - 'ubuntu-24.04'
+          - 'macos-15-intel'
+        swift:
+          - '6.2.3'
+        android-api:
+          - '28'
+          #- '34'
+        android-arch:
+          - 'x86_64'
+        android-sdk:
+          - 'nightly-6.3'
+          #- 'nightly-main'
+
+    steps:
+      - uses: Homebrew/actions/setup-homebrew@main
+
+      - name: "Install Host Toolchain prerequisites"
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -y install libcurl4-openssl-dev || (sudo apt-get update && sudo apt-get -y install libcurl4-openssl-dev)
+
+      - run: brew install swiftly
+
+      - run: swiftly init --skip-install --assume-yes --quiet-shell-followup
+
+      - run: swiftly install --assume-yes --use ${{ matrix.swift }}
+
+      - run: swiftly run swift --version
+
+      - run: swift --version
+
+      - name: "Download skip plugin"
+        uses: actions/download-artifact@v6
+        with:
+          name: skip-plugin-${{ runner.os }}
+          path: skip-artifact
+
+      - name: "Install skip from artifact"
+        shell: bash
+        run: |
+          OSNAME=$(echo $RUNNER_OS | tr '[A-Z]' '[a-z]')
+          cd skip-artifact
+          unzip skip-${OSNAME}.zip
+          SKIP_BIN="${PWD}/skip.artifactbundle/bin"
+          find skip.artifactbundle -type f -name skip -exec chmod +x {} +
+          echo "${SKIP_BIN}" >> $GITHUB_PATH
+          echo "SKIP_COMMAND_OVERRIDE=${SKIP_BIN}/skip" >> $GITHUB_ENV
+
+      - run: which skip
+
+      - run: skip version
+
+      - run: skip android sdk install --version '${{ matrix.android-sdk }}'
+
+      - run: skip doctor
+
+      - run: skip checkup --native
+        # there's a bug runing checkup with a local skipstone comand build:
+        # [✗] error: Dependencies could not be resolved because root depends on 'skip' 1.7.5..<2.0.0.
+        if: false
+        #if: runner.os != 'Linux'
+
+      - name: "Prepare Android emulator environment"
+        if: runner.os == 'Linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+          # need to free disk space or the emulator fails to launch sometimes
+          sudo rm -rf /Applications/Xcode_1[45]*.app /Applications/Xcode_16.[0123].app /opt/microsoft /opt/google /opt/az /usr/share/miniconda /usr/share/az* /usr/share/glade* /usr/local/share/chromium /usr/local/share/powershell /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/julia* /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+
+      - name: "Create and Launch Emulator"
+        run: |
+          export ANDROID_USER_HOME=$HOME/.android
+          export ANDROID_EMULATOR_HOME=$ANDROID_USER_HOME
+          export ANDROID_AVD_HOME=$ANDROID_EMULATOR_HOME/avd
+          skip android emulator create --verbose
+          skip android emulator list --verbose
+          skip android emulator launch --background --verbose
+          #adb wait-for-device
+
+      - name: "Test new Swift package on emulator"
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir package-demo
+          cd package-demo
+
+          swift package init --name "PackageDemo"
+          # test on host OS
+          swift test
+
+          # test using shared object file loaded from .apk
+          skip android test --apk --arch ${{ matrix.android-arch }}
+
+          # test using xcrunner binary
+          skip android test --arch ${{ matrix.android-arch }}
+
+          # now add a failing test to make sure it actually fails
+          echo '@Test func shouldFail() { #expect(1+1 == 3, "Test should fail") }' >> Tests/PackageDemoTests/PackageDemoTests.swift
+
+          swift build --build-tests
+          ! swift test
+          ! skip android test --apk --arch ${{ matrix.android-arch }}
+
+      - name: "Test new Skip Lite framework on emulator"
+        # Disabled on Linux:
+        # /home/runner/work/_temp/demo-lite-framework/Tests/DemoFrameworkTests/DemoFrameworkTests.swift:2:8: error: no such module 'OSLog'
+        if: runner.os != 'Linux'
+        working-directory: ${{ runner.temp }}
+        run: |
+          skip init --no-build --transpiled-model --module-tests demo-lite-framework DemoFramework
+          cd demo-lite-framework
+          ANDROID_SERIAL=emulator-5554 swift test
+
+      - name: "Test new Skip Fuse framework on emulator"
+        # Disabled due to build error on Linux:
+        # /home/runner/work/_temp/demo-fuse-framework/.build/checkouts/skip-android-bridge/Sources/SkipAndroidBridge/AndroidBundle.swift:6:12: error: cannot inherit from class 'Bundle' (compiled with Swift 6.2.4) because it has overridable members that could not be loaded in Swift 5.10
+        if: runner.os != 'Linux'
+        working-directory: ${{ runner.temp }}
+        run: |
+          skip init --no-build --native-model --bridged --module-tests demo-fuse-framework DemoFramework
+          cd demo-fuse-framework
+          ANDROID_SERIAL=emulator-5554 swift test
 
