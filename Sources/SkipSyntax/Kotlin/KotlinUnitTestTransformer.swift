@@ -8,7 +8,7 @@
 /// 1. **XCTest**: Classes inheriting from `XCTestCase` with `test`-prefixed methods
 /// 2. **Swift Testing**: Functions annotated with `@Test` and types annotated with `@Suite`
 ///
-/// In both cases, JUnit `@Test` annotations and the AndroidJUnit4 runner annotation are applied.
+/// In both cases, JUnit `@Test` annotation is applied.
 /// Async test functions are wrapped with coroutine test dispatchers.
 ///
 /// - Seealso: `SkipUnit/XCTest.kt`
@@ -73,27 +73,32 @@ final class KotlinUnitTestTransformer: KotlinTransformer {
     }
 
     private func visit(_ node: KotlinSyntaxNode, codebaseInfo: CodebaseInfo.Context, testFuncNames: Set<String>, importPackages: inout Set<String>) -> VisitResult<KotlinSyntaxNode> {
-        if let functionDeclaration = node as? KotlinFunctionDeclaration, let owningClass = functionDeclaration.parent as? KotlinClassDeclaration {
-            // Check for XCTest-style test functions (name-based detection)
-            let isXCTest = Self.isXCTestFunction(functionDeclaration, owningClass: owningClass, codebaseInfo: codebaseInfo)
-            // Check for Swift Testing @Test functions (attribute-based detection)
-            let isSwiftTesting = testFuncNames.contains(functionDeclaration.name)
+        if let functionDeclaration = node as? KotlinFunctionDeclaration {
+            if let owningClass = functionDeclaration.parent as? KotlinClassDeclaration {
+                // Check for XCTest-style test functions (name-based detection)
+                let isXCTest = Self.isXCTestFunction(functionDeclaration, owningClass: owningClass, codebaseInfo: codebaseInfo)
+                // Check for Swift Testing @Test functions (attribute-based detection)
+                let isSwiftTesting = testFuncNames.contains(functionDeclaration.name)
 
-            if isXCTest || isSwiftTesting {
-                if functionDeclaration.apiFlags.options.contains(.async) {
-                    transformAsyncTest(functionDeclaration: functionDeclaration, owningClass: owningClass, importPackages: &importPackages)
-                } else {
-                    functionDeclaration.annotations += ["@Test"]
+                if isXCTest || isSwiftTesting {
+                    if functionDeclaration.apiFlags.options.contains(.async) {
+                        transformAsyncTest(functionDeclaration: functionDeclaration, owningClass: owningClass, importPackages: &importPackages)
+                    } else {
+                        functionDeclaration.annotations += ["@Test"]
+                    }
+                    owningClass.addTestRunnerAnnotation()
+                    // For Swift Testing @Suite types that don't extend XCTestCase,
+                    // make them implement the XCTestCase interface for assertion access
+                    if isSwiftTesting && !isXCTest {
+                        ensureXCTestCaseConformance(owningClass)
+                    }
+                    return .skip
                 }
-                let testRunner = "@org.junit.runner.RunWith(androidx.test.ext.junit.runners.AndroidJUnit4::class)"
-                if !owningClass.annotations.contains(testRunner) {
-                    owningClass.annotations += [testRunner]
-                }
-                // For Swift Testing @Suite types that don't extend XCTestCase,
-                // make them implement the XCTestCase interface for assertion access
-                if isSwiftTesting && !isXCTest {
-                    ensureXCTestCaseConformance(owningClass)
-                }
+            } else if let owningCodeBlock = functionDeclaration.parent as? KotlinCodeBlock,
+                      functionDeclaration.role == .global,
+                      testFuncNames.contains(functionDeclaration.name) {
+                // Freestanding @Test function — wrap in a generated test class
+                wrapFreestandingTestFunction(functionDeclaration, in: owningCodeBlock, importPackages: &importPackages)
                 return .skip
             }
         }
@@ -112,6 +117,42 @@ final class KotlinUnitTestTransformer: KotlinTransformer {
         }
         if !hasXCTestCase {
             classDeclaration.inherits.append(.named("XCTestCase", []))
+        }
+    }
+
+    /// Wraps a freestanding `@Test` function in a generated JUnit test class.
+    /// e.g., `@Test func addition() { ... }` becomes:
+    /// ```
+    /// class AdditionTests: XCTestCase {
+    ///     @Test fun addition() { ... }
+    /// }
+    /// ```
+    private func wrapFreestandingTestFunction(_ functionDeclaration: KotlinFunctionDeclaration, in codeBlock: KotlinCodeBlock, importPackages: inout Set<String>) {
+        // Generate a class name from the function name (e.g., "addition" -> "AdditionTests")
+        let className = functionDeclaration.name.prefix(1).uppercased() + functionDeclaration.name.dropFirst() + "Tests"
+
+        // Create a wrapper class (final, not open)
+        let classDeclaration = KotlinClassDeclaration(name: className, signature: .named(className, []), declarationType: .classDeclaration)
+        classDeclaration.modifiers = Modifiers(isFinal: true)
+        classDeclaration.inherits = [.named("XCTestCase", [])]
+        classDeclaration.addTestRunnerAnnotation()
+        classDeclaration.extras = functionDeclaration.extras
+
+        // Move the function into the class
+        if let index = codeBlock.statements.firstIndex(where: { $0 === functionDeclaration }) {
+            functionDeclaration.role = .member
+            functionDeclaration.extras = nil
+            if functionDeclaration.apiFlags.options.contains(.async) {
+                transformAsyncTest(functionDeclaration: functionDeclaration, owningClass: classDeclaration, importPackages: &importPackages)
+            } else {
+                functionDeclaration.annotations += ["@Test"]
+            }
+            classDeclaration.members = [functionDeclaration]
+            functionDeclaration.parent = classDeclaration
+
+            codeBlock.statements[index] = classDeclaration
+            classDeclaration.parent = codeBlock
+            classDeclaration.assignParentReferences()
         }
     }
 
@@ -164,5 +205,25 @@ final class KotlinUnitTestTransformer: KotlinTransformer {
         let infos = codebaseInfo.typeInfos(forNamed: owningType)
         // check for whether the containing class inherits from `XCTestCase`
         return infos.contains { $0.inherits.contains { $0.isNamed("XCTestCase", moduleName: "XCTest", generics: []) } }
+    }
+}
+
+extension KotlinClassDeclaration {
+    /// A default annotation to add to generated test cases, which is required by Robolectric to correcly mock various Android API
+    ///
+    /// Failure to include this will result in errors like:
+    /// ```
+    /// java.lang.RuntimeException: Method parse in android.net.Uri not mocked.
+    /// ```
+    /// See also: https://developer.android.com/training/testing/local-tests#mocking-dependencies
+    static let testRunnerAnnotation: String? = "@org.junit.runner.RunWith(androidx.test.ext.junit.runners.AndroidJUnit4::class)"
+
+    func addTestRunnerAnnotation() {
+        if let testRunnerAnnotation = Self.testRunnerAnnotation {
+            // only add the annotation of the class itself has not already specified an annotation
+            if !self.annotations.contains(where: { $0.hasPrefix("@org.junit.runner.RunWith(") || $0.hasPrefix("@RunWith(") }) {
+                self.annotations += [testRunnerAnnotation]
+            }
+        }
     }
 }
